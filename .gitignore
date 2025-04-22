@@ -19,7 +19,18 @@
 
 # Go workspace file
 go.work
-go.work.sum
+
+# Temporary files
+*.tmp
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
 
 # env file
 .env
