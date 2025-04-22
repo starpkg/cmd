@@ -1,8 +1,4 @@
-# 🐚 cmd
-
-Shell commands at your script's fingertips.
-
-## Introduction
+# 🐚 `cmd` - Starlark module for executing shell commands across platforms
 
 The `cmd` module provides Starlark scripts with the ability to execute shell commands, offering a simple yet powerful interface to interact with the underlying operating system. This module is designed to be cross-platform, working seamlessly on Windows, macOS, and Linux.
 
@@ -111,6 +107,7 @@ print("Command took", result.duration, "seconds")  # Approximately 2 seconds
 Executes a shell command and returns a result struct.
 
 Parameters:
+
 - `command` (string): The command to execute
 - `shell` (string, optional): Override the default shell
 - `working_dir` (string, optional): Working directory for the command
@@ -126,6 +123,7 @@ Returns a `CommandResult` struct.
 Finds the path to an executable.
 
 Parameters:
+
 - `command` (string): The command to locate
 
 Returns a string representing the full path to the executable, or None if not found.
