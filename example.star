@@ -12,50 +12,50 @@ def main():
     for cmd in ["git", "python", "ls", "cat"]:
         path = which(cmd)
         if path:
-            print(f"Found {cmd} at {path}")
+            print("Found {} at {}".format(cmd, path))
         else:
-            print(f"{cmd} not found")
+            print("{} not found".format(cmd))
 
     # Execute a basic command
     print("\n=== Basic Command ===")
     result = run("echo Hello from Starlark!")
-    print(f"Exit code: {result.exit_code}")
-    print(f"Output: {result.stdout.strip()}")
+    print("Exit code: {}".format(result.exit_code))
+    print("Output: {}".format(result.stdout.strip()))
 
     # Show command with error
     print("\n=== Command with Error ===")
     result = run("ls /nonexistent_directory")
-    print(f"Success: {result.success}")
-    print(f"Exit code: {result.exit_code}")
-    print(f"Error message: {result.stderr}")
+    print("Success: {}".format(result.success))
+    print("Exit code: {}".format(result.exit_code))
+    print("Error message: {}".format(result.stderr))
 
     # Run a command with a timeout
     print("\n=== Command with Timeout ===")
     result = run("sleep 1", timeout=5)
-    print(f"Duration: {result.duration:.2f} seconds")
+    print("Duration: {:.2f} seconds".format(result.duration))
 
     # Run command with custom environment
     print("\n=== Command with Environment ===")
     result = run("echo $GREETING, $NAME!", env={"GREETING": "Hello", "NAME": "World"})
-    print(f"Output: {result.stdout.strip()}")
+    print("Output: {}".format(result.stdout.strip()))
 
     # Run command with input from stdin
     print("\n=== Command with Stdin ===")
     if "windows" not in shell.lower():
         result = run("cat", stdin="Input from Starlark!")
-        print(f"Output: {result.stdout.strip()}")
+        print("Output: {}".format(result.stdout.strip()))
     else:
         result = run("powershell -Command -", stdin="Write-Host 'Input from Starlark!'")
-        print(f"Output: {result.stdout.strip()}")
+        print("Output: {}".format(result.stdout.strip()))
 
     # Run a complex command with pipes
     print("\n=== Command with Pipes ===")
     if "windows" not in shell.lower():
-        result = run("ls -la | grep '\.star' | wc -l")
-        print(f"Number of .star files: {result.stdout.strip()}")
+        result = run("ls -la | grep '.star' | wc -l")
+        print("Number of .star files: {}".format(result.stdout.strip()))
     else:
         result = run("dir /b | findstr .star | find /c /v \"\"")
-        print(f"Number of .star files: {result.stdout.strip()}")
+        print("Number of .star files: {}".format(result.stdout.strip()))
 
 # Execute the main function
-main() 
+main()
