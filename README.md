@@ -12,6 +12,7 @@ The `cmd` module provides Starlark scripts with the ability to execute shell com
 - **Detailed Results**: Access exit code, stdout, stderr, execution time, and more
 - **Input Support**: Provide stdin input to commands
 - **Shell Detection**: Automatic platform-appropriate shell selection
+- **Real-Time Output**: Display command output to console in real-time while also capturing it
 
 ## Configuration
 
@@ -24,6 +25,7 @@ The `cmd` module supports the following configuration options:
 | `working_dir` | string | Default working directory | Current directory |
 | `env` | dict | Default environment variables | {} |
 | `combine_output` | bool | Combine stdout and stderr by default | false |
+| `real_time_output` | bool | Show output to console in real-time | false |
 
 ## Usage
 
@@ -51,6 +53,20 @@ result = run("ls -la",
 
 print(result.output)  # Combined stdout and stderr
 print(result.exit_code)  # Exit code
+```
+
+### Real-Time Output Display
+
+```python
+load("cmd", "run")
+
+# Show output in real-time while also capturing it
+result = run("for i in {1..5}; do echo $i; sleep 1; done",
+    real_time_output=True)
+
+# Output appears in the terminal in real-time,
+# but is also available in the result
+print("Captured output:", result.stdout)
 ```
 
 ### Environment Variables
@@ -114,6 +130,7 @@ Parameters:
 - `env` (dict, optional): Additional environment variables
 - `timeout` (int, optional): Timeout in seconds
 - `combine_output` (bool, optional): Combine stdout and stderr
+- `real_time_output` (bool, optional): Show output in console in real-time
 - `stdin` (string, optional): Input to provide to the command
 
 Returns a `CommandResult` struct.

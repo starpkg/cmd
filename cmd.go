@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/1set/starlet"
 	"github.com/1set/starlet/dataconv"
+	"github.com/1set/starlet/dataconv/types"
 	"github.com/starpkg/base"
 	"go.starlark.net/starlark"
 	"go.starlark.net/starlarkstruct"
@@ -24,11 +26,12 @@ const ModuleName = "cmd"
 
 // Configuration key constants
 const (
-	configKeyShell         = "shell"
-	configKeyTimeout       = "timeout"
-	configKeyWorkingDir    = "working_dir"
-	configKeyEnv           = "env"
-	configKeyCombineOutput = "combine_output"
+	configKeyShell          = "shell"
+	configKeyTimeout        = "timeout"
+	configKeyWorkingDir     = "working_dir"
+	configKeyEnv            = "env"
+	configKeyCombineOutput  = "combine_output"
+	configKeyRealTimeOutput = "real_time_output"
 )
 
 var (
@@ -64,17 +67,19 @@ func NewModule() *Module {
 		genConfigOption(configKeyWorkingDir, "Default working directory for commands", getCurrentDir()),
 		genConfigOption(configKeyEnv, "Default environment variables to add to all commands", map[string]string{}),
 		genConfigOption(configKeyCombineOutput, "Whether to combine stdout and stderr by default", false),
+		genConfigOption(configKeyRealTimeOutput, "Whether to show stdout and stderr in console in real-time", false),
 	)
 }
 
 // NewModuleWithConfig creates a new instance of Module with the given configuration values
-func NewModuleWithConfig(shell string, timeout int, workingDir string, env map[string]string, combineOutput bool) *Module {
+func NewModuleWithConfig(shell string, timeout int, workingDir string, env map[string]string, combineOutput bool, realTimeOutput bool) *Module {
 	return newModuleWithOptions(
 		genConfigOption(configKeyShell, "Default shell to use with preset value", shell),
 		genConfigOption(configKeyTimeout, "Default timeout in seconds with preset value", timeout),
 		genConfigOption(configKeyWorkingDir, "Default working directory with preset value", workingDir),
 		genConfigOption(configKeyEnv, "Default environment variables with preset value", env),
 		genConfigOption(configKeyCombineOutput, "Whether to combine stdout and stderr with preset value", combineOutput),
+		genConfigOption(configKeyRealTimeOutput, "Whether to show output in real-time with preset value", realTimeOutput),
 	)
 }
 
@@ -95,6 +100,7 @@ func newModuleWithOptions(
 	workingDirOpt *base.ConfigOption[string],
 	envOpt *base.ConfigOption[map[string]string],
 	combineOutputOpt *base.ConfigOption[bool],
+	realTimeOutputOpt *base.ConfigOption[bool],
 ) *Module {
 	cm, _ := base.NewConfigurableModuleWithConfigOptions(
 		shellOpt,
@@ -102,6 +108,7 @@ func newModuleWithOptions(
 		workingDirOpt,
 		envOpt,
 		combineOutputOpt,
+		realTimeOutputOpt,
 	)
 	return &Module{
 		cfgMod: cm,
@@ -122,11 +129,28 @@ func getCurrentDir() string {
 func findDefaultShell() string {
 	switch runtime.GOOS {
 	case "windows":
-		// Try to find PowerShell first, fallback to cmd.exe
+		// Try to find PowerShell first
 		powershell, err := exec.LookPath("powershell.exe")
 		if err == nil {
 			return powershell
 		}
+
+		// Try to find cmd.exe
+		cmd, err := exec.LookPath("cmd.exe")
+		if err == nil {
+			return cmd
+		}
+
+		// Check in system directories if LookPath fails
+		systemRoot := os.Getenv("SystemRoot")
+		if systemRoot != "" {
+			cmdPath := filepath.Join(systemRoot, "System32", "cmd.exe")
+			if _, err := os.Stat(cmdPath); err == nil {
+				return cmdPath
+			}
+		}
+
+		// Fallback to just cmd.exe and let the OS resolve it
 		return "cmd.exe"
 	default:
 		// Try to use the SHELL environment variable
@@ -152,26 +176,33 @@ func (m *Module) LoadModule() starlet.ModuleLoader {
 // run is a Starlark function that executes a shell command
 func (m *Module) run(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var (
-		command       string
-		shell         string
-		workingDir    string
-		timeout       int
-		combineOutput bool
-		stdin         string
-		env           = starlark.NewDict(0)
+		command        = types.NewNullableStringOrBytesNoDefault()
+		shell          = types.NewNullableStringOrBytes("")
+		workingDir     = types.NewNullableStringOrBytes("")
+		timeout        = 0
+		combineOutput  = false
+		realTimeOutput = false
+		stdin          = types.NewNullableStringOrBytes("")
+		env            = starlark.NewDict(0)
 	)
 
 	// Parse arguments
 	if err := starlark.UnpackArgs(b.Name(), args, kwargs,
-		"command", &command,
-		"shell?", &shell,
-		"working_dir?", &workingDir,
+		"command", command,
+		"shell?", shell,
+		"working_dir?", workingDir,
 		"timeout?", &timeout,
 		"combine_output?", &combineOutput,
-		"stdin?", &stdin,
+		"real_time_output?", &realTimeOutput,
+		"stdin?", stdin,
 		"env?", &env,
 	); err != nil {
 		return none, err
+	}
+
+	// Check if command is empty
+	if command.IsNullOrEmpty() {
+		return none, fmt.Errorf("command is required")
 	}
 
 	// Get configuration values
@@ -179,20 +210,30 @@ func (m *Module) run(thread *starlark.Thread, b *starlark.Builtin, args starlark
 	defaultTimeout := m.ext.GetInt(configKeyTimeout, 60)
 	defaultWorkingDir := m.ext.GetString(configKeyWorkingDir, getCurrentDir())
 	defaultCombine := m.ext.GetBool(configKeyCombineOutput, false)
+	defaultRealTime := m.ext.GetBool(configKeyRealTimeOutput, false)
 	defaultEnv, _ := base.GetConfigValue[map[string]string](m.cfgMod, configKeyEnv)
 
 	// Apply defaults where needed
-	if shell == "" {
-		shell = defaultShell
+	shellStr := shell.GoString()
+	if shellStr == "" {
+		shellStr = defaultShell
 	}
-	if workingDir == "" {
-		workingDir = defaultWorkingDir
+
+	workingDirStr := workingDir.GoString()
+	if workingDirStr == "" {
+		workingDirStr = defaultWorkingDir
 	}
+
 	if timeout <= 0 {
 		timeout = defaultTimeout
 	}
-	if combineOutput == false {
+
+	if !combineOutput {
 		combineOutput = defaultCombine
+	}
+
+	if !realTimeOutput {
+		realTimeOutput = defaultRealTime
 	}
 
 	// Create environment by merging the default with any provided values
@@ -211,16 +252,12 @@ func (m *Module) run(thread *starlark.Thread, b *starlark.Builtin, args starlark
 			if err != nil {
 				continue
 			}
-			if ks, ok := k.(starlark.String); ok {
-				if vs, ok := v.(starlark.String); ok {
-					envMap[string(ks)] = string(vs)
-				}
-			}
+			envMap[dataconv.StarString(k)] = dataconv.StarString(v)
 		}
 	}
 
 	// Execute the command and get results
-	result, err := executeCommand(thread, command, shell, workingDir, timeout, combineOutput, stdin, envMap)
+	result, err := executeCommand(thread, command.GoString(), shellStr, workingDirStr, timeout, combineOutput, realTimeOutput, stdin.GoString(), envMap)
 	if err != nil {
 		// If there's an error setting up the command, return it
 		return none, err
@@ -232,12 +269,17 @@ func (m *Module) run(thread *starlark.Thread, b *starlark.Builtin, args starlark
 
 // which is a Starlark function to find the path of an executable
 func (m *Module) which(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	var command string
-	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "command", &command); err != nil {
+	var command = types.NewNullableStringOrBytesNoDefault()
+
+	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "command", command); err != nil {
 		return none, err
 	}
 
-	path, err := exec.LookPath(command)
+	if command.IsNullOrEmpty() {
+		return none, fmt.Errorf("command is required")
+	}
+
+	path, err := exec.LookPath(command.GoString())
 	if err != nil {
 		return none, nil
 	}
@@ -251,15 +293,15 @@ func (m *Module) findShell(thread *starlark.Thread, b *starlark.Builtin, args st
 }
 
 // executeCommand runs a shell command with the specified options and returns a CommandResult
-func executeCommand(thread *starlark.Thread, command, shell, workingDir string, timeout int, combineOutput bool, stdin string, env map[string]string) (*CommandResult, error) {
+func executeCommand(thread *starlark.Thread, command, shell, workingDir string, timeout int, combineOutput bool, realTimeOutput bool, stdin string, env map[string]string) (*CommandResult, error) {
 	var cmd *exec.Cmd
 
 	// Create the result
 	result := &CommandResult{}
 
 	// Setup command differently based on platform
-	if runtime.GOOS == "windows" && (shell == "cmd.exe" || shell == "cmd") {
-		cmd = exec.Command("cmd.exe", "/C", command)
+	if runtime.GOOS == "windows" && (filepath.Base(shell) == "cmd.exe" || shell == "cmd") {
+		cmd = exec.Command(shell, "/C", command)
 	} else if filepath.Base(shell) == "powershell.exe" || filepath.Base(shell) == "pwsh.exe" || filepath.Base(shell) == "pwsh" {
 		cmd = exec.Command(shell, "-Command", command)
 	} else {
@@ -307,12 +349,29 @@ func executeCommand(thread *starlark.Thread, command, shell, workingDir string, 
 
 	// Setup stdout/stderr capture
 	if combineOutput {
+		// Combined output mode
 		combined := &bytes.Buffer{}
-		cmd.Stdout = combined
-		cmd.Stderr = combined
+
+		if realTimeOutput {
+			// Real-time output with combined streams
+			cmd.Stdout = io.MultiWriter(combined, os.Stdout)
+			cmd.Stderr = io.MultiWriter(combined, os.Stderr)
+		} else {
+			// Capture without real-time display
+			cmd.Stdout = combined
+			cmd.Stderr = combined
+		}
 	} else {
-		cmd.Stdout = &stdoutBuf
-		cmd.Stderr = &stderrBuf
+		// Separate stdout/stderr mode
+		if realTimeOutput {
+			// Real-time output with separate streams
+			cmd.Stdout = io.MultiWriter(&stdoutBuf, os.Stdout)
+			cmd.Stderr = io.MultiWriter(&stderrBuf, os.Stderr)
+		} else {
+			// Capture without real-time display
+			cmd.Stdout = &stdoutBuf
+			cmd.Stderr = &stderrBuf
+		}
 	}
 
 	// Record start time

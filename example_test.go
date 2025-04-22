@@ -71,6 +71,7 @@ func ExampleNewModuleWithConfig() {
 			"TEST_VAR": "custom_value",
 		},
 		false, // combine_output
+		false, // real_time_output
 	)
 
 	moduleLoader := module.LoadModule()
@@ -120,4 +121,63 @@ main()
 
 	// Output:
 	// Environment variable test completed
+}
+
+// This example demonstrates real-time output display
+func ExampleModule_realTimeOutput() {
+	// Create module with custom configuration for real-time output
+	module := cmd.NewModuleWithConfig(
+		"",    // shell (use default)
+		10,    // timeout
+		"",    // working_dir (use default)
+		nil,   // env
+		false, // combine_output
+		true,  // real_time_output - enable by default
+	)
+
+	moduleLoader := module.LoadModule()
+
+	// Simple script that uses a real-time output command
+	script := `
+load("cmd", "run")
+
+def main():
+    # Run a command with output that should be displayed in real-time
+    # This is a simple cross-platform command that produces output
+    result = run("echo 'This output should appear in real-time'")
+    
+    # We're not printing the result here because it would make the 
+    # test output non-deterministic - the real-time output is already visible
+    print("Real-time test completed successfully")
+
+main()
+`
+	// Create a starlet machine with print capture
+	env := starlet.NewDefault()
+	env.SetScriptContent([]byte(script))
+
+	// Capture print output
+	var printOutput strings.Builder
+	env.SetPrintFunc(func(_ *starlark.Thread, msg string) {
+		printOutput.WriteString(msg)
+		printOutput.WriteString("\n")
+	})
+
+	// Register our module
+	loaders := make(map[string]starlet.ModuleLoader)
+	loaders["cmd"] = moduleLoader
+	env.SetLazyloadModules(loaders)
+
+	// Run the script
+	_, err := env.Run()
+	if err != nil {
+		log.Fatalf("Failed to run script: %v", err)
+		return
+	}
+
+	// Print the output
+	fmt.Println(printOutput.String())
+
+	// Output:
+	// Real-time test completed successfully
 }
