@@ -398,12 +398,15 @@ func executeCommand(thread *starlark.Thread, command, shell, workingDir string, 
 
 	// Handle completion
 	if err != nil {
+		result.Success = false
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			result.ExitCode = exitErr.ExitCode()
-		} else if ctx.Err() == context.DeadlineExceeded {
-			result.Error = fmt.Sprintf("Command timed out after %d seconds", timeout)
 		} else {
 			result.Error = fmt.Sprintf("Command failed: %v", err)
+		}
+		// Check if the context was canceled due to timeout, even if Wait() didn't return an error
+		if ctx.Err() == context.DeadlineExceeded && result.Error == "" {
+			result.Error = fmt.Sprintf("Command timed out after %d seconds", timeout)
 		}
 	} else {
 		result.Success = true

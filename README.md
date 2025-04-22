@@ -35,9 +35,9 @@ The `cmd` module supports the following configuration options:
 load("cmd", "run")
 
 # Simple command execution
-result = run("echo Hello, World!")
-print(result.stdout)  # "Hello, World!"
-print(result.success)  # True
+result = run("echo 'Hello, World!'")
+print(result.stdout)    # Hello, World!
+print(result.success)   # True
 ```
 
 ### Command with Options

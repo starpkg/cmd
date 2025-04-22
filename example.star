@@ -32,7 +32,7 @@ def main():
     # Run a command with a timeout
     print("\n=== Command with Timeout ===")
     result = run("sleep 1", timeout=5)
-    print("Duration: {:.2f} seconds".format(result.duration))
+    print("Duration: {} seconds".format(result.duration))
 
     # Run command with custom environment
     print("\n=== Command with Environment ===")
@@ -59,3 +59,5 @@ def main():
 
 # Execute the main function
 main()
+
+pprint(run("ping -c 10 www.bing.com", real_time_output=True, timeout=5))
