@@ -63,21 +63,21 @@ type Module struct {
 func NewModule() *Module {
 	return newModuleWithOptions(
 		genConfigOption(configKeyShell, "Default shell to use for command execution", findDefaultShell()),
-		genConfigOption(configKeyTimeout, "Default timeout in seconds for command execution", 60),
 		genConfigOption(configKeyWorkingDir, "Default working directory for commands", getCurrentDir()),
 		genConfigOption(configKeyEnv, "Default environment variables to add to all commands", map[string]string{}),
+		genConfigOption(configKeyTimeout, "Default timeout in seconds for command execution", 60.0),
 		genConfigOption(configKeyCombineOutput, "Whether to combine stdout and stderr by default", false),
 		genConfigOption(configKeyRealTimeOutput, "Whether to show stdout and stderr in console in real-time", false),
 	)
 }
 
 // NewModuleWithConfig creates a new instance of Module with the given configuration values
-func NewModuleWithConfig(shell string, timeout int, workingDir string, env map[string]string, combineOutput bool, realTimeOutput bool) *Module {
+func NewModuleWithConfig(shell string, workingDir string, env map[string]string, timeout float64, combineOutput bool, realTimeOutput bool) *Module {
 	return newModuleWithOptions(
 		genConfigOption(configKeyShell, "Default shell to use with preset value", shell),
-		genConfigOption(configKeyTimeout, "Default timeout in seconds with preset value", timeout),
 		genConfigOption(configKeyWorkingDir, "Default working directory with preset value", workingDir),
 		genConfigOption(configKeyEnv, "Default environment variables with preset value", env),
+		genConfigOption(configKeyTimeout, "Default timeout in seconds with preset value", timeout),
 		genConfigOption(configKeyCombineOutput, "Whether to combine stdout and stderr with preset value", combineOutput),
 		genConfigOption(configKeyRealTimeOutput, "Whether to show output in real-time with preset value", realTimeOutput),
 	)
@@ -96,9 +96,9 @@ func genConfigOption[T any](name, description string, defaultValue T) *base.Conf
 // newModuleWithOptions creates a Module with the given configuration options
 func newModuleWithOptions(
 	shellOpt *base.ConfigOption[string],
-	timeoutOpt *base.ConfigOption[int],
 	workingDirOpt *base.ConfigOption[string],
 	envOpt *base.ConfigOption[map[string]string],
+	timeoutOpt *base.ConfigOption[float64],
 	combineOutputOpt *base.ConfigOption[bool],
 	realTimeOutputOpt *base.ConfigOption[bool],
 ) *Module {
@@ -179,10 +179,10 @@ func (m *Module) run(thread *starlark.Thread, b *starlark.Builtin, args starlark
 		command        = types.NewNullableStringOrBytesNoDefault()
 		shell          = types.NewNullableStringOrBytes("")
 		workingDir     = types.NewNullableStringOrBytes("")
-		timeout        = 0
-		combineOutput  = false
-		realTimeOutput = false
+		timeout        = types.FloatOrInt(0)
 		stdin          = types.NewNullableStringOrBytes("")
+		combineOutput  = types.NewNullableBool(false)
+		realTimeOutput = types.NewNullableBool(false)
 		env            = starlark.NewDict(0)
 	)
 
@@ -191,11 +191,11 @@ func (m *Module) run(thread *starlark.Thread, b *starlark.Builtin, args starlark
 		"command", command,
 		"shell?", shell,
 		"working_dir?", workingDir,
-		"timeout?", &timeout,
-		"combine_output?", &combineOutput,
-		"real_time_output?", &realTimeOutput,
-		"stdin?", stdin,
 		"env?", &env,
+		"stdin?", stdin,
+		"timeout?", &timeout,
+		"combine_output?", combineOutput,
+		"real_time_output?", realTimeOutput,
 	); err != nil {
 		return none, err
 	}
@@ -205,38 +205,42 @@ func (m *Module) run(thread *starlark.Thread, b *starlark.Builtin, args starlark
 		return none, fmt.Errorf("command is required")
 	}
 
-	// Get configuration values
-	defaultShell := m.ext.GetString(configKeyShell, findDefaultShell())
-	defaultTimeout := m.ext.GetInt(configKeyTimeout, 60)
-	defaultWorkingDir := m.ext.GetString(configKeyWorkingDir, getCurrentDir())
-	defaultCombine := m.ext.GetBool(configKeyCombineOutput, false)
-	defaultRealTime := m.ext.GetBool(configKeyRealTimeOutput, false)
-	defaultEnv, _ := base.GetConfigValue[map[string]string](m.cfgMod, configKeyEnv)
-
 	// Apply defaults where needed
 	shellStr := shell.GoString()
 	if shellStr == "" {
-		shellStr = defaultShell
+		shellStr = m.ext.GetString(configKeyShell)
+		if shellStr == "" {
+			shellStr = findDefaultShell()
+		}
 	}
 
 	workingDirStr := workingDir.GoString()
 	if workingDirStr == "" {
-		workingDirStr = defaultWorkingDir
+		workingDirStr = m.ext.GetString(configKeyWorkingDir)
+		if workingDirStr == "" {
+			workingDirStr = getCurrentDir()
+		}
 	}
 
-	if timeout <= 0 {
-		timeout = defaultTimeout
+	stdinStr := stdin.GoString()
+
+	timeoutFloat := timeout.GoFloat()
+	if timeoutFloat <= 0 {
+		timeoutFloat = m.ext.GetFloat(configKeyTimeout, 60)
 	}
 
-	if !combineOutput {
-		combineOutput = defaultCombine
+	combineOutputBool := bool(combineOutput.Value().Truth())
+	if combineOutput.IsNull() {
+		combineOutputBool = m.ext.GetBool(configKeyCombineOutput, false)
 	}
 
-	if !realTimeOutput {
-		realTimeOutput = defaultRealTime
+	realTimeOutputBool := bool(realTimeOutput.Value().Truth())
+	if realTimeOutput.IsNull() {
+		realTimeOutputBool = m.ext.GetBool(configKeyRealTimeOutput, false)
 	}
 
 	// Create environment by merging the default with any provided values
+	defaultEnv, _ := base.GetConfigValue[map[string]string](m.cfgMod, configKeyEnv)
 	envMap := make(map[string]string)
 	for k, v := range defaultEnv {
 		envMap[k] = v
@@ -257,7 +261,7 @@ func (m *Module) run(thread *starlark.Thread, b *starlark.Builtin, args starlark
 	}
 
 	// Execute the command and get results
-	result, err := executeCommand(thread, command.GoString(), shellStr, workingDirStr, timeout, combineOutput, realTimeOutput, stdin.GoString(), envMap)
+	result, err := executeCommand(thread, command.GoString(), shellStr, workingDirStr, timeoutFloat, stdinStr, combineOutputBool, realTimeOutputBool, envMap)
 	if err != nil {
 		// If there's an error setting up the command, return it
 		return none, err
@@ -293,7 +297,7 @@ func (m *Module) findShell(thread *starlark.Thread, b *starlark.Builtin, args st
 }
 
 // executeCommand runs a shell command with the specified options and returns a CommandResult
-func executeCommand(thread *starlark.Thread, command, shell, workingDir string, timeout int, combineOutput bool, realTimeOutput bool, stdin string, env map[string]string) (*CommandResult, error) {
+func executeCommand(thread *starlark.Thread, command, shell, workingDir string, timeout float64, stdin string, combineOutput bool, realTimeOutput bool, env map[string]string) (*CommandResult, error) {
 	var cmd *exec.Cmd
 
 	// Create the result
@@ -406,7 +410,7 @@ func executeCommand(thread *starlark.Thread, command, shell, workingDir string, 
 		}
 		// Check if the context was canceled due to timeout, even if Wait() didn't return an error
 		if ctx.Err() == context.DeadlineExceeded && result.Error == "" {
-			result.Error = fmt.Sprintf("Command timed out after %d seconds", timeout)
+			result.Error = fmt.Sprintf("Command timed out after %.2f seconds", timeout)
 		}
 	} else {
 		result.Success = true

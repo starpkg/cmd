@@ -65,11 +65,11 @@ func ExampleNewModuleWithConfig() {
 	// Create module with custom configuration (only test env vars)
 	module := cmd.NewModuleWithConfig(
 		"", // shell (use default)
-		30, // timeout
 		"", // working_dir (use default)
 		map[string]string{ // env
 			"TEST_VAR": "custom_value",
 		},
+		30,    // timeout
 		false, // combine_output
 		false, // real_time_output
 	)
@@ -128,9 +128,9 @@ func ExampleModule_realTimeOutput() {
 	// Create module with custom configuration for real-time output
 	module := cmd.NewModuleWithConfig(
 		"",    // shell (use default)
-		10,    // timeout
 		"",    // working_dir (use default)
 		nil,   // env
+		10,    // timeout
 		false, // combine_output
 		true,  // real_time_output - enable by default
 	)
@@ -146,8 +146,6 @@ def main():
     # This is a simple cross-platform command that produces output
     result = run("echo 'This output should appear in real-time'")
     
-    # We're not printing the result here because it would make the 
-    # test output non-deterministic - the real-time output is already visible
     print("Real-time test completed successfully")
 
 main()
@@ -179,5 +177,6 @@ main()
 	fmt.Println(printOutput.String())
 
 	// Output:
+	// This output should appear in real-time
 	// Real-time test completed successfully
 }
