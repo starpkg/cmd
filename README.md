@@ -124,16 +124,16 @@ Executes a shell command and returns a result struct.
 
 Parameters:
 
-- `command` (string): The command to execute
-- `shell` (string, optional): Override the default shell
-- `working_dir` (string, optional): Working directory for the command
-- `env` (dict, optional): Additional environment variables
-- `timeout` (int, optional): Timeout in seconds
-- `combine_output` (bool, optional): Combine stdout and stderr
-- `real_time_output` (bool, optional): Show output in console in real-time
+- `command` (string, required): The command to execute
+- `shell` (string, optional): Shell to use for execution (default: system-specific)
+- `working_dir` (string, optional): Working directory for the command (default: current directory)
+- `env` (dict, optional): Additional environment variables to set
 - `stdin` (string, optional): Input to provide to the command
+- `timeout` (float, optional): Maximum execution time in seconds (default: 0, no timeout)
+- `combine_output` (bool, optional): Whether to combine stdout and stderr (default: false)
+- `real_time_output` (bool, optional): Show output in console in real-time (default: false)
 
-Returns a `CommandResult` struct.
+Returns a `CommandResult` struct containing execution results.
 
 #### `which(command)`
 
