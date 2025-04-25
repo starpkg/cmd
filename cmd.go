@@ -172,8 +172,8 @@ func (m *Module) LoadModule() starlet.ModuleLoader {
 	// Module functions
 	additionalFuncs := starlark.StringDict{
 		"run":        starlark.NewBuiltin(ModuleName+".run", m.run),
-		"which":      starlark.NewBuiltin(ModuleName+".which", m.which),
-		"find_shell": starlark.NewBuiltin(ModuleName+".find_shell", m.findShell),
+		"which":      starlark.NewBuiltin(ModuleName+".which", m.starWhich),
+		"find_shell": starlark.NewBuiltin(ModuleName+".find_shell", m.starFindShell),
 	}
 	return m.cfgMod.LoadModule(ModuleName, additionalFuncs)
 }
@@ -226,7 +226,7 @@ func (m *Module) run(thread *starlark.Thread, b *starlark.Builtin, args starlark
 	envMap := buildEnvMap(m.cfgMod, env)
 
 	// Execute command and get results
-	result, err := executeCommand(thread, command.GoString(), shellStr, cwdStr, timeoutFloat, stdinStr, combineOutputBool, realtimeOutputBool, captureOutputBool, envMap)
+	result, err := starExecuteCommand(thread, command.GoString(), shellStr, cwdStr, timeoutFloat, stdinStr, combineOutputBool, realtimeOutputBool, captureOutputBool, envMap)
 	if err != nil {
 		return none, err
 	}
@@ -295,8 +295,8 @@ func buildEnvMap(cfgMod *base.ConfigurableModule, env *starlark.Dict) map[string
 	return envMap
 }
 
-// which is a Starlark function to find the path of an executable
-func (m *Module) which(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+// starWhich is a Starlark function to find the path of an executable
+func (m *Module) starWhich(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var command = types.StringOrBytes("")
 
 	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "command", &command); err != nil {
@@ -315,13 +315,13 @@ func (m *Module) which(thread *starlark.Thread, b *starlark.Builtin, args starla
 	return starlark.String(path), nil
 }
 
-// findShell is a Starlark function to get the appropriate system shell
-func (m *Module) findShell(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+// starFindShell is a Starlark function to get the appropriate system shell
+func (m *Module) starFindShell(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	return starlark.String(findDefaultShell()), nil
 }
 
-// executeCommand runs a shell command with the specified options and returns a ProcessResult
-func executeCommand(thread *starlark.Thread, command, shell, cwd string, timeout float64, stdin string, combineOutput bool, realtimeOutput bool, captureOutput bool, env map[string]string) (*ProcessResult, error) {
+// starExecuteCommand runs a shell command with the specified options and returns a ProcessResult
+func starExecuteCommand(thread *starlark.Thread, command, shell, cwd string, timeout float64, stdin string, combineOutput bool, realtimeOutput bool, captureOutput bool, env map[string]string) (*ProcessResult, error) {
 	var cmd *exec.Cmd
 
 	// Create the result
