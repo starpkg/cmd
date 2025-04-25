@@ -23,7 +23,7 @@ The `cmd` module supports the following configuration options:
 | Option | Type | Description | Default |
 |--------|------|-------------|---------|
 | `shell` | string | Default shell to use (None for direct execution) | Platform dependent |
-| `timeout` | int | Default timeout in seconds | 0 (no timeout) |
+| `timeout` | float | Default timeout in seconds | 0 (no timeout) |
 | `cwd` | string | Default working directory | Current directory |
 | `env` | dict | Default environment variables | {} |
 | `combine_output` | bool | Combine stdout and stderr by default | false |
@@ -143,6 +143,7 @@ result = run("command_that_does_not_exist")
 if not result.success:
     print("Command failed with error:", result.error)
     print("Exit code:", result.exit_code)
+    print("Error output:", result.stderr)  # Available when combine_output=False
 ```
 
 ### Command Timing
@@ -152,7 +153,31 @@ load("cmd", "run")
 
 # Check execution time
 result = run("sleep 2")
-print("Command took", result.duration, "seconds")  # Approximately 2 seconds
+print("Command took", result.duration)  # Approximately 2 seconds
+```
+
+### Providing Input to Commands
+
+```python
+load("cmd", "run")
+
+# Provide input to a command
+result = run("cat", stdin="Hello from stdin")
+print(result.stdout)  # "Hello from stdin"
+```
+
+### Platform-Specific Shell Behavior
+
+```python
+load("cmd", "run", "find_shell")
+
+# Get the default shell for the current platform
+default_shell = find_shell()
+print("Default shell:", default_shell)
+
+# On Windows, automatically uses cmd.exe or PowerShell
+# On Unix-like systems, uses $SHELL or /bin/sh
+result = run("echo $SHELL", shell=default_shell)
 ```
 
 ## API Reference
@@ -204,11 +229,13 @@ The `ProcessResult` struct contains the following fields:
 - `output` (string or None): Combined output (when combined and captured)
 - `error` (string): Error message for execution failures
 - `pid` (int): Process ID
-- `start_time` (float): Start timestamp (seconds since epoch)
-- `end_time` (float): End timestamp (seconds since epoch)
-- `duration` (float): Execution time in seconds
+- `start_time` (time): Start timestamp as a Starlark time value
+- `end_time` (time): End timestamp as a Starlark time value
+- `duration` (duration): Execution time as a Starlark duration value
 
 Notes:
+
 - When `combine_output=True`, only `output` field contains data, and `stdout`/`stderr` are None
 - When `combine_output=False`, only `stdout` and `stderr` fields contain data, and `output` is None
 - When `capture_output=False`, all output fields (`stdout`, `stderr`, `output`) are None
+- The time-related fields can be used with Starlark's time module functions
