@@ -40,8 +40,8 @@ var (
 	empty string
 )
 
-// CommandResult represents the result of command execution
-type CommandResult struct {
+// ProcessResult represents the result of command execution
+type ProcessResult struct {
 	Success   bool
 	ExitCode  int
 	Stdout    string
@@ -231,7 +231,7 @@ func (m *Module) run(thread *starlark.Thread, b *starlark.Builtin, args starlark
 		return none, err
 	}
 
-	return createResultStruct(result)
+	return createResultStruct(result, combineOutputBool, captureOutputBool)
 }
 
 // Helper functions for argument processing
@@ -320,12 +320,12 @@ func (m *Module) findShell(thread *starlark.Thread, b *starlark.Builtin, args st
 	return starlark.String(findDefaultShell()), nil
 }
 
-// executeCommand runs a shell command with the specified options and returns a CommandResult
-func executeCommand(thread *starlark.Thread, command, shell, cwd string, timeout float64, stdin string, combineOutput bool, realtimeOutput bool, captureOutput bool, env map[string]string) (*CommandResult, error) {
+// executeCommand runs a shell command with the specified options and returns a ProcessResult
+func executeCommand(thread *starlark.Thread, command, shell, cwd string, timeout float64, stdin string, combineOutput bool, realtimeOutput bool, captureOutput bool, env map[string]string) (*ProcessResult, error) {
 	var cmd *exec.Cmd
 
 	// Create the result
-	result := &CommandResult{}
+	result := &ProcessResult{}
 
 	// Setup command differently based on whether to use a shell or not
 	if shell == "" {
@@ -459,13 +459,13 @@ func executeCommand(thread *starlark.Thread, command, shell, cwd string, timeout
 	if captureOutput {
 		if combineOutput {
 			result.Output = combinedBuf.String()
-			// When combine_output is true, stdout and stderr are None
+			// When combine_output is true, stdout and stderr are empty (will be set to None in createResultStruct)
 			result.Stdout = ""
 			result.Stderr = ""
 		} else {
 			result.Stdout = stdoutBuf.String()
 			result.Stderr = stderrBuf.String()
-			// When combine_output is false, output is None
+			// When combine_output is false, output is empty (will be set to None in createResultStruct)
 			result.Output = ""
 		}
 	}
@@ -473,8 +473,8 @@ func executeCommand(thread *starlark.Thread, command, shell, cwd string, timeout
 	return result, nil
 }
 
-// createResultStruct converts a CommandResult to a Starlark struct
-func createResultStruct(result *CommandResult) (starlark.Value, error) {
+// createResultStruct converts a ProcessResult to a Starlark struct
+func createResultStruct(result *ProcessResult, combineOutput bool, captureOutput bool) (starlark.Value, error) {
 	fields := starlark.StringDict{
 		"success":    starlark.Bool(result.Success),
 		"exit_code":  starlark.MakeInt(result.ExitCode),
@@ -485,22 +485,23 @@ func createResultStruct(result *CommandResult) (starlark.Value, error) {
 		"error":      starlark.String(result.Error),
 	}
 
-	// Handle stdout, stderr, and output based on the combination settings
-	if result.Stdout != "" {
-		fields["stdout"] = starlark.String(result.Stdout)
+	// Handle stdout, stderr, and output based on capture and combination settings
+	if captureOutput {
+		if combineOutput {
+			// When combine_output=true, stdout/stderr are None, only output has value
+			fields["stdout"] = none
+			fields["stderr"] = none
+			fields["output"] = starlark.String(result.Output)
+		} else {
+			// When combine_output=false, only stdout/stderr have values, output is None
+			fields["stdout"] = starlark.String(result.Stdout)
+			fields["stderr"] = starlark.String(result.Stderr)
+			fields["output"] = none
+		}
 	} else {
+		// When capture_output=false, all output fields are None
 		fields["stdout"] = none
-	}
-
-	if result.Stderr != "" {
-		fields["stderr"] = starlark.String(result.Stderr)
-	} else {
 		fields["stderr"] = none
-	}
-
-	if result.Output != "" {
-		fields["output"] = starlark.String(result.Output)
-	} else {
 		fields["output"] = none
 	}
 

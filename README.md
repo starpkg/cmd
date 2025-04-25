@@ -175,7 +175,7 @@ Parameters:
 - `realtime_output` (bool, optional): Show output in console in real-time (default: false)
 - `capture_output` (bool, optional): Whether to capture output (default: true)
 
-Returns a `CommandResult` struct containing execution results.
+Returns a `ProcessResult` struct containing execution results.
 
 #### `which(command)`
 
@@ -193,9 +193,9 @@ Returns the appropriate system shell.
 
 Returns a string with the path to the default shell.
 
-### CommandResult Struct
+### ProcessResult Struct
 
-The `CommandResult` struct contains the following fields:
+The `ProcessResult` struct contains the following fields:
 
 - `success` (bool): True if the command exited with code 0
 - `exit_code` (int): The command's exit code
