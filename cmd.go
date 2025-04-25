@@ -17,6 +17,7 @@ import (
 	"github.com/1set/starlet/dataconv"
 	"github.com/1set/starlet/dataconv/types"
 	"github.com/starpkg/base"
+	startime "go.starlark.net/lib/time"
 	"go.starlark.net/starlark"
 	"go.starlark.net/starlarkstruct"
 )
@@ -49,9 +50,9 @@ type ProcessResult struct {
 	Output    string
 	Error     string
 	PID       int
-	StartTime float64
-	EndTime   float64
-	Duration  float64
+	StartTime time.Time
+	EndTime   time.Time
+	Duration  time.Duration
 }
 
 // Module wraps the ConfigurableModule with specific functionality for command execution
@@ -417,8 +418,7 @@ func starExecuteCommand(thread *starlark.Thread, command, shell, cwd string, tim
 	}
 
 	// Record start time
-	startTime := time.Now()
-	result.StartTime = float64(startTime.Unix())
+	result.StartTime = time.Now()
 
 	// Execute command
 	err := cmd.Start()
@@ -434,9 +434,8 @@ func starExecuteCommand(thread *starlark.Thread, command, shell, cwd string, tim
 	err = cmd.Wait()
 
 	// Record end time
-	endTime := time.Now()
-	result.EndTime = float64(endTime.Unix())
-	result.Duration = endTime.Sub(startTime).Seconds()
+	result.EndTime = time.Now()
+	result.Duration = result.EndTime.Sub(result.StartTime)
 
 	// Handle completion
 	if err != nil {
@@ -475,13 +474,14 @@ func starExecuteCommand(thread *starlark.Thread, command, shell, cwd string, tim
 
 // createResultStruct converts a ProcessResult to a Starlark struct
 func createResultStruct(result *ProcessResult, combineOutput bool, captureOutput bool) (starlark.Value, error) {
+	// Basic fields
 	fields := starlark.StringDict{
 		"success":    starlark.Bool(result.Success),
 		"exit_code":  starlark.MakeInt(result.ExitCode),
 		"pid":        starlark.MakeInt(result.PID),
-		"start_time": starlark.Float(result.StartTime),
-		"end_time":   starlark.Float(result.EndTime),
-		"duration":   starlark.Float(result.Duration),
+		"start_time": startime.Time(result.StartTime),
+		"end_time":   startime.Time(result.EndTime),
+		"duration":   startime.Duration(result.Duration),
 		"error":      starlark.String(result.Error),
 	}
 
