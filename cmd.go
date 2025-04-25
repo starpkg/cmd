@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	sp "bitbucket.org/creachadair/shell"
 	"github.com/1set/starlet"
 	"github.com/1set/starlet/dataconv"
 	"github.com/1set/starlet/dataconv/types"
@@ -331,7 +332,17 @@ func starExecuteCommand(thread *starlark.Thread, command, shell, cwd string, tim
 	// Setup command differently based on whether to use a shell or not
 	if shell == "" {
 		// Execute command directly without a shell
-		parts := strings.Fields(command)
+
+		// HACK: workaround for escape issue of creachadair/shell on Windows
+		cmdToSplit := command
+		if runtime.GOOS == "windows" {
+			cmdToSplit = strings.ReplaceAll(command, `\`, `\\`)
+		}
+
+		parts, ok := sp.Split(cmdToSplit)
+		if !ok {
+			return nil, fmt.Errorf("failed to parse command: invalid syntax or unclosed quotes")
+		}
 		if len(parts) == 0 {
 			return nil, fmt.Errorf("empty command")
 		}

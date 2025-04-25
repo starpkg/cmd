@@ -282,3 +282,53 @@ main()
 	// Stderr is None: True
 	// Command completed
 }
+
+// This example demonstrates executing commands without a shell using quoted arguments
+func ExampleModule_noShellWithQuotes() {
+	// Create a new module
+	module := cmd.NewModule()
+	moduleLoader := module.LoadModule()
+
+	// Simple script that runs a command with quoted arguments without a shell
+	script := `
+load("cmd", "run")
+
+def main():
+    # Run command with quoted arguments without a shell
+    # This tests that quotes are properly handled
+    result = run('printf "%d-%d-%d" 1 2 3', shell=None)
+    print("Output:", result.stdout)
+    print("Quotes properly handled:", "1-2-3" in result.stdout)
+
+main()
+`
+	// Create a starlet machine with print capture
+	env := starlet.NewDefault()
+	env.SetScriptContent([]byte(script))
+
+	// Capture print output
+	var printOutput strings.Builder
+	env.SetPrintFunc(func(_ *starlark.Thread, msg string) {
+		printOutput.WriteString(msg)
+		printOutput.WriteString("\n")
+	})
+
+	// Register our module
+	loaders := make(map[string]starlet.ModuleLoader)
+	loaders["cmd"] = moduleLoader
+	env.SetLazyloadModules(loaders)
+
+	// Run the script
+	_, err := env.Run()
+	if err != nil {
+		log.Fatalf("Failed to run script: %v", err)
+		return
+	}
+
+	// Print the output
+	fmt.Println(printOutput.String())
+
+	// Output:
+	// Output: 1-2-3
+	// Quotes properly handled: True
+}

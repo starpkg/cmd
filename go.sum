@@ -1,3 +1,5 @@
+bitbucket.org/creachadair/shell v0.0.8 h1:3yM6JcAfaGWzjzcCamTblzSIWXm/YSs0PFGIzBm2HTo=
+bitbucket.org/creachadair/shell v0.0.8/go.mod h1:vINzudofoUXZSJ5tREgpy+Etyjsag3ait5WOWImEVZ0=
 github.com/1set/starlet v0.1.3 h1:MPvwI7ronLiGnhs5S4JUsFe8zac6bRrgu+///wPp8xo=
 github.com/1set/starlet v0.1.3/go.mod h1:Su3Z6E70LUwFiK0l/Wqk1d1xyxktRPS8vuhXDMWBV2Y=
 github.com/1set/starlight v0.1.2 h1:Lf+ktJPLeck5QJLnKGj+brFkBBtitQBWLvXVA0cTcq8=
@@ -8,7 +10,7 @@ github.com/chzyer/readline v0.0.0-20180603132655-2972be24d48e h1:fY5BOSpyZCqRo5O
 github.com/chzyer/readline v0.0.0-20180603132655-2972be24d48e/go.mod h1:nSuG5e5PlCu98SY8svDHJxuZscDgtXS6KTTbou5AhLI=
 github.com/chzyer/test v0.0.0-20180213035817-a1ea475d72b1 h1:q763qf9huN11kDQavWsoZXJNW3xEE4JJyHa5Q25/sd8=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
-github.com/google/go-cmp v0.5.1 h1:JFrFEBb2xKufg6XkJsJr+WbKb4FQlURi5RUcBveYu9k=
+github.com/google/go-cmp v0.6.0 h1:ofyhxvXcZhMsU5ulbFiLKl/XBFqE1GSq7atu8tAmTRI=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
 github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
 github.com/h2so5/here v0.0.0-20200815043652-5e14eb691fae h1:ghqI9EdSyyIL2iuOM9UIGVO7kEYQFVLKAUIFoOea5MY=
