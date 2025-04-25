@@ -21,10 +21,10 @@ load("cmd", "run")
 
 def main():
     # Basic command execution - echo works on all platforms
-    result = run("echo Hello, World!")
+    result = run("echo Hello, World!", env={"TEST_VAR": "custom_value"})
     print("Command succeeded:", result.success)
     print("Exit code:", result.exit_code)
-    print("Output contains 'Hello':", "Hello" in result.stdout)
+    print("Output contains 'Hello':", "Hello" in result.stdout if result.stdout != None else False)
 
 main()
 `
@@ -65,13 +65,14 @@ func ExampleNewModuleWithConfig() {
 	// Create module with custom configuration (only test env vars)
 	module := cmd.NewModuleWithConfig(
 		"", // shell (use default)
-		"", // working_dir (use default)
+		"", // cwd (use default)
 		map[string]string{ // env
 			"TEST_VAR": "custom_value",
 		},
 		30,    // timeout
 		false, // combine_output
-		false, // real_time_output
+		false, // realtime_output
+		true,  // capture_output
 	)
 
 	moduleLoader := module.LoadModule()
@@ -123,16 +124,17 @@ main()
 	// Environment variable test completed
 }
 
-// This example demonstrates real-time output display
-func ExampleModule_realTimeOutput() {
+// This example demonstrates realtime output display
+func ExampleModule_realtimeOutput() {
 	// Create module with custom configuration for real-time output
 	module := cmd.NewModuleWithConfig(
 		"",    // shell (use default)
-		"",    // working_dir (use default)
+		"",    // cwd (use default)
 		nil,   // env
 		10,    // timeout
 		false, // combine_output
-		true,  // real_time_output - enable by default
+		true,  // realtime_output - enable by default
+		false, // capture_output
 	)
 
 	moduleLoader := module.LoadModule()
@@ -179,4 +181,104 @@ main()
 	// Output:
 	// This output should appear in real-time
 	// Real-time test completed successfully
+}
+
+// This example demonstrates executing commands without a shell
+func ExampleModule_noShell() {
+	// Create a new module
+	module := cmd.NewModule()
+	moduleLoader := module.LoadModule()
+
+	// Simple script that runs a command without a shell
+	script := `
+load("cmd", "run")
+
+def main():
+    # Run command directly without a shell
+    result = run("echo Direct execution", shell=None)
+    print("Command exit code:", result.exit_code)
+    print("Command completed")
+
+main()
+`
+	// Create a starlet machine with print capture
+	env := starlet.NewDefault()
+	env.SetScriptContent([]byte(script))
+
+	// Capture print output
+	var printOutput strings.Builder
+	env.SetPrintFunc(func(_ *starlark.Thread, msg string) {
+		printOutput.WriteString(msg)
+		printOutput.WriteString("\n")
+	})
+
+	// Register our module
+	loaders := make(map[string]starlet.ModuleLoader)
+	loaders["cmd"] = moduleLoader
+	env.SetLazyloadModules(loaders)
+
+	// Run the script
+	_, err := env.Run()
+	if err != nil {
+		log.Fatalf("Failed to run script: %v", err)
+		return
+	}
+
+	// Print the output
+	fmt.Println(printOutput.String())
+
+	// Output:
+	// Command exit code: 0
+	// Command completed
+}
+
+// This example demonstrates capture_output=False
+func ExampleModule_noCaptureOutput() {
+	// Create a new module
+	module := cmd.NewModule()
+	moduleLoader := module.LoadModule()
+
+	// Simple script that runs without capturing output
+	script := `
+load("cmd", "run")
+
+def main():
+    # Run command without capturing output
+    result = run("echo Output not captured", capture_output=False)
+    print("Stdout is None:", result.stdout == None)
+    print("Stderr is None:", result.stderr == None)
+    print("Command completed")
+
+main()
+`
+	// Create a starlet machine with print capture
+	env := starlet.NewDefault()
+	env.SetScriptContent([]byte(script))
+
+	// Capture print output
+	var printOutput strings.Builder
+	env.SetPrintFunc(func(_ *starlark.Thread, msg string) {
+		printOutput.WriteString(msg)
+		printOutput.WriteString("\n")
+	})
+
+	// Register our module
+	loaders := make(map[string]starlet.ModuleLoader)
+	loaders["cmd"] = moduleLoader
+	env.SetLazyloadModules(loaders)
+
+	// Run the script
+	_, err := env.Run()
+	if err != nil {
+		log.Fatalf("Failed to run script: %v", err)
+		return
+	}
+
+	// Print the output
+	fmt.Println(printOutput.String())
+
+	// Output:
+	// Stdout is None: True
+	// Stderr is None: True
+	// Command completed
 }
