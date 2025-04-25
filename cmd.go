@@ -177,7 +177,7 @@ func (m *Module) LoadModule() starlet.ModuleLoader {
 func (m *Module) run(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	// Initialize variables for command arguments
 	var (
-		command        = types.NewNullableStringOrBytesNoDefault()
+		command        = types.StringOrBytes("")
 		shell          = types.NewNullableStringOrBytes("")
 		workingDir     = types.NewNullableStringOrBytes("")
 		timeout        = types.FloatOrInt(0)
@@ -189,7 +189,7 @@ func (m *Module) run(thread *starlark.Thread, b *starlark.Builtin, args starlark
 
 	// Parse arguments
 	if err := starlark.UnpackArgs(b.Name(), args, kwargs,
-		"command", command,
+		"command", &command,
 		"shell?", shell,
 		"working_dir?", workingDir,
 		"env?", &env,
@@ -202,7 +202,7 @@ func (m *Module) run(thread *starlark.Thread, b *starlark.Builtin, args starlark
 	}
 
 	// Check if command is empty
-	if command.IsNullOrEmpty() {
+	if command.IsEmpty() {
 		return none, fmt.Errorf("command is required")
 	}
 
@@ -285,13 +285,13 @@ func buildEnvMap(cfgMod *base.ConfigurableModule, env *starlark.Dict) map[string
 
 // which is a Starlark function to find the path of an executable
 func (m *Module) which(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	var command = types.NewNullableStringOrBytesNoDefault()
+	var command = types.StringOrBytes("")
 
-	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "command", command); err != nil {
+	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "command", &command); err != nil {
 		return none, err
 	}
 
-	if command.IsNullOrEmpty() {
+	if command.IsEmpty() {
 		return none, fmt.Errorf("command is required")
 	}
 
