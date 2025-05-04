@@ -23,7 +23,7 @@ The `cmd` module supports the following configuration options:
 | Option | Type | Description | Default |
 |--------|------|-------------|---------|
 | `shell` | string | Default shell to use (None for direct execution) | Platform dependent |
-| `timeout` | float | Default timeout in seconds | 0 (no timeout) |
+| `timeout` | float | Default timeout in seconds (0 = no timeout) | 0 |
 | `cwd` | string | Default working directory | Current directory |
 | `env` | dict | Default environment variables | {} |
 | `combine_output` | bool | Combine stdout and stderr by default | false |
@@ -129,7 +129,7 @@ load("cmd", "which")
 
 # Find path to executable
 python_path = which("python")
-print(python_path)  # "/usr/bin/python" or similar
+print(python_path)  # "/usr/bin/python" or similar, or None if not found
 ```
 
 ### Error Handling
@@ -175,7 +175,7 @@ load("cmd", "run", "find_shell")
 default_shell = find_shell()
 print("Default shell:", default_shell)
 
-# On Windows, automatically uses cmd.exe or PowerShell
+# On Windows, automatically uses PowerShell or cmd.exe
 # On Unix-like systems, uses $SHELL or /bin/sh
 result = run("echo $SHELL", shell=default_shell)
 ```
@@ -216,7 +216,9 @@ Returns a string representing the full path to the executable, or None if not fo
 
 Returns the appropriate system shell.
 
-Returns a string with the path to the default shell.
+Parameters: None
+
+Returns a string with the path to the default shell for the current platform.
 
 ### ProcessResult Struct
 

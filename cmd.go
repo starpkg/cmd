@@ -493,7 +493,11 @@ func createResultStruct(result *ProcessResult, combineOutput bool, captureOutput
 		"start_time": startime.Time(result.StartTime),
 		"end_time":   startime.Time(result.EndTime),
 		"duration":   startime.Duration(result.Duration),
-		"error":      starlark.String(result.Error),
+	}
+	if result.Error != "" {
+		fields["error"] = starlark.String(result.Error)
+	} else {
+		fields["error"] = none
 	}
 
 	// Handle stdout, stderr, and output based on capture and combination settings
