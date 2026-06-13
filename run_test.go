@@ -8,8 +8,11 @@ package cmd_test
 //     non-allowlisted command)
 //   - run options (env= / stdin= / combine_output= / capture_output= and the
 //     documented ProcessResult field shape)
+//   - cross-platform execution (real argv run + stdout capture proven per-OS;
+//     this section runs in CI on ubuntu/macos/windows)
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 
@@ -197,4 +200,38 @@ print("pid_positive:", r.pid > 0)
 			}
 		}
 	})
+}
+
+// --- cross-platform execution ------------------------------------------------
+
+// TestCrossPlatformExecution proves that real argv execution and stdout capture
+// behave identically on every OS in the CI matrix (ubuntu / macos / windows).
+// `go` is on PATH on all GitHub runners; on Windows exec.LookPath resolves
+// go.exe. `go env GOOS` prints the GOOS the toolchain was built for, which on a
+// native build equals the host runtime.GOOS — so the script's captured stdout
+// must match the host's runtime.GOOS ("linux", "darwin", or "windows").
+func TestCrossPlatformExecution(t *testing.T) {
+	module := cmd.NewModuleWithAllow("go")
+
+	out, err := runScript(module, `
+load("cmd", "run")
+r = run("go env GOOS")
+print("success:", r.success)
+print("exit_code:", r.exit_code)
+print("goos:", r.stdout.strip())
+`)
+	if err != nil {
+		t.Fatalf("cross-platform run errored: %v", err)
+	}
+	if !strings.Contains(out, "success: True") {
+		t.Errorf("expected success=True, got:\n%s", out)
+	}
+	if !strings.Contains(out, "exit_code: 0") {
+		t.Errorf("expected exit_code=0, got:\n%s", out)
+	}
+	// The trimmed stdout must equal the host GOOS this test binary was built for.
+	wantGOOS := "goos: " + runtime.GOOS
+	if !strings.Contains(out, wantGOOS) {
+		t.Errorf("expected stdout to report host GOOS %q (%q), got:\n%s", runtime.GOOS, wantGOOS, out)
+	}
 }
