@@ -1,4 +1,14 @@
-// Package cmd provides a Starlark module for executing shell commands.
+// Package cmd provides a Starlark module for executing external commands.
+//
+// Security posture (PKG-09): the module is DISABLED by default — a script that
+// loads it cannot run anything until the Go host explicitly enables it with an
+// allowlist via NewModuleWithAllow. When enabled it is still deny-by-default:
+// only commands whose canonical form matches an allowlist prefix run. Commands
+// are always executed via argv (exec.Command), never through a shell, so there
+// is no shell interpolation. Command text is hardened against control and
+// zero-width/format characters before allowlist matching and execution. The
+// enable flag and allowlist are host policy set in Go; a script (or an
+// environment variable) can never widen them.
 package cmd
 
 import (
@@ -8,10 +18,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	sp "bitbucket.org/creachadair/shell"
 	"github.com/1set/starlet"
@@ -28,7 +39,6 @@ const ModuleName = "cmd"
 
 // Configuration key constants
 const (
-	configKeyShell          = "shell"
 	configKeyTimeout        = "timeout"
 	configKeyCwd            = "cwd"
 	configKeyEnv            = "env"
@@ -56,16 +66,21 @@ type ProcessResult struct {
 	Duration  time.Duration
 }
 
-// Module wraps the ConfigurableModule with specific functionality for command execution
+// Module wraps the ConfigurableModule with specific functionality for command execution.
+// enabled and allow are host policy (set in Go) and are never overridable by a
+// script or by environment variables.
 type Module struct {
-	cfgMod *base.ConfigurableModule
-	ext    *base.ConfigurableModuleExt
+	cfgMod  *base.ConfigurableModule
+	ext     *base.ConfigurableModuleExt
+	enabled bool
+	allow   []string
 }
 
-// NewModule creates a new instance of Module with default configurations
+// NewModule creates a new instance of Module with default configurations.
+// The module is DISABLED: run() returns an error until the host enables it with
+// an allowlist via NewModuleWithAllow.
 func NewModule() *Module {
 	return newModuleWithOptions(
-		genConfigOption(configKeyShell, "Default shell to use for command execution", findDefaultShell()),
 		genConfigOption(configKeyCwd, "Default working directory for commands", getCurrentDir()),
 		genConfigOption(configKeyEnv, "Default environment variables to add to all commands", map[string]string{}),
 		genConfigOption(configKeyTimeout, "Default timeout in seconds for command execution", 0.0),
@@ -75,10 +90,10 @@ func NewModule() *Module {
 	)
 }
 
-// NewModuleWithConfig creates a new instance of Module with the given configuration values
-func NewModuleWithConfig(shell string, cwd string, env map[string]string, timeout float64, combineOutput, realtimeOutput, captureOutput bool) *Module {
+// NewModuleWithConfig creates a new instance of Module with the given configuration values.
+// Like NewModule, the returned module is DISABLED until enabled with an allowlist.
+func NewModuleWithConfig(cwd string, env map[string]string, timeout float64, combineOutput, realtimeOutput, captureOutput bool) *Module {
 	return newModuleWithOptions(
-		genConfigOption(configKeyShell, "Default shell to use with preset value", shell),
 		genConfigOption(configKeyCwd, "Default working directory with preset value", cwd),
 		genConfigOption(configKeyEnv, "Default environment variables with preset value", env),
 		genConfigOption(configKeyTimeout, "Default timeout in seconds with preset value", timeout),
@@ -86,6 +101,18 @@ func NewModuleWithConfig(shell string, cwd string, env map[string]string, timeou
 		genConfigOption(configKeyRealtimeOutput, "Whether to show output in real-time with preset value", realtimeOutput),
 		genConfigOption(configKeyCaptureOutput, "Whether to capture command output with preset value", captureOutput),
 	)
+}
+
+// NewModuleWithAllow returns a module that is ENABLED with the given allowlist.
+// Each entry is a prefix matched against the canonical command (argv joined by a
+// single space) at a word boundary: "git" permits "git status" but not
+// "gitleaks"; "go test" permits "go test ./..." but not "go build". An empty
+// allowlist enables the module but permits nothing (deny-all).
+func NewModuleWithAllow(allow ...string) *Module {
+	m := NewModule()
+	m.enabled = true
+	m.allow = append([]string(nil), allow...)
+	return m
 }
 
 // Helper functions
@@ -100,7 +127,6 @@ func genConfigOption[T any](name, description string, defaultValue T) *base.Conf
 
 // newModuleWithOptions creates a Module with the given configuration options
 func newModuleWithOptions(
-	shellOpt *base.ConfigOption[string],
 	cwdOpt *base.ConfigOption[string],
 	envOpt *base.ConfigOption[map[string]string],
 	timeoutOpt *base.ConfigOption[float64],
@@ -109,7 +135,6 @@ func newModuleWithOptions(
 	captureOutputOpt *base.ConfigOption[bool],
 ) *Module {
 	cm, _ := base.NewConfigurableModuleWithConfigOptions(
-		shellOpt,
 		timeoutOpt,
 		cwdOpt,
 		envOpt,
@@ -132,60 +157,62 @@ func getCurrentDir() string {
 	return dir
 }
 
-// findDefaultShell returns the appropriate shell for the current operating system
-func findDefaultShell() string {
-	switch runtime.GOOS {
-	case "windows":
-		// Try to find PowerShell first
-		powershell, err := exec.LookPath("powershell.exe")
-		if err == nil {
-			return powershell
-		}
-
-		// Try to find cmd.exe
-		cmd, err := exec.LookPath("cmd.exe")
-		if err == nil {
-			return cmd
-		}
-
-		// Check in system directories if LookPath fails
-		systemRoot := os.Getenv("SystemRoot")
-		if systemRoot != "" {
-			cmdPath := filepath.Join(systemRoot, "System32", "cmd.exe")
-			if _, err := os.Stat(cmdPath); err == nil {
-				return cmdPath
-			}
-		}
-
-		// Fallback to just cmd.exe and let the OS resolve it
-		return "cmd.exe"
-	default:
-		// Try to use the SHELL environment variable
-		if shell := os.Getenv("SHELL"); shell != "" {
-			return shell
-		}
-		// Fallback to /bin/sh for Unix-like systems
-		return "/bin/sh"
+// sanitizeCommand validates that a command string is well-formed UTF-8 and free
+// of control characters and Unicode format/zero-width characters (category Cf,
+// e.g. zero-width spaces, BiDi overrides, BOM). These can hide or reorder text
+// so a command looks allowlisted while resolving to something else.
+func sanitizeCommand(s string) (string, error) {
+	if !utf8.ValidString(s) {
+		return "", fmt.Errorf("command is not valid UTF-8")
 	}
+	for _, r := range s {
+		if unicode.Is(unicode.Cf, r) {
+			return "", fmt.Errorf("command contains a disallowed format/zero-width character (%U)", r)
+		}
+		if unicode.IsControl(r) {
+			return "", fmt.Errorf("command contains a disallowed control character (%U)", r)
+		}
+	}
+	return s, nil
+}
+
+// commandAllowed reports whether the canonical command (argv joined by a single
+// space) is permitted by the allowlist. An entry matches when the command equals
+// it or starts with it followed by a space, so prefixes match at word
+// boundaries. An empty allowlist permits nothing.
+func commandAllowed(canonical string, allow []string) bool {
+	for _, p := range allow {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if canonical == p {
+			return true
+		}
+		if strings.HasPrefix(canonical, p) && canonical[len(p)] == ' ' {
+			return true
+		}
+	}
+	return false
 }
 
 // LoadModule returns the Starlark module loader with command-specific functions
 func (m *Module) LoadModule() starlet.ModuleLoader {
-	// Module functions
 	additionalFuncs := starlark.StringDict{
-		"run":        starlark.NewBuiltin(ModuleName+".run", m.run),
-		"which":      starlark.NewBuiltin(ModuleName+".which", m.starWhich),
-		"find_shell": starlark.NewBuiltin(ModuleName+".find_shell", m.starFindShell),
+		"run":   starlark.NewBuiltin(ModuleName+".run", m.run),
+		"which": starlark.NewBuiltin(ModuleName+".which", m.starWhich),
 	}
 	return m.cfgMod.LoadModule(ModuleName, additionalFuncs)
 }
 
-// run is a Starlark function that executes a shell command
+// run is a Starlark function that executes an external command via argv.
 func (m *Module) run(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	// Initialize variables for command arguments
+	if !m.enabled {
+		return none, fmt.Errorf("cmd: command execution is disabled; construct the module with cmd.NewModuleWithAllow(...) to enable it with an allowlist")
+	}
+
 	var (
 		command        = types.StringOrBytes("")
-		shell          = types.NewNullableStringOrBytes("")
 		cwd            = types.NewNullableStringOrBytes("")
 		timeout        = types.FloatOrInt(0)
 		stdin          = types.NewNullableStringOrBytes("")
@@ -195,10 +222,8 @@ func (m *Module) run(thread *starlark.Thread, b *starlark.Builtin, args starlark
 		env            = starlark.NewDict(0)
 	)
 
-	// Parse arguments
 	if err := starlark.UnpackArgs(b.Name(), args, kwargs,
 		"command", &command,
-		"shell?", shell,
 		"cwd?", cwd,
 		"env?", &env,
 		"stdin?", stdin,
@@ -210,13 +235,35 @@ func (m *Module) run(thread *starlark.Thread, b *starlark.Builtin, args starlark
 		return none, err
 	}
 
-	// Check if command is empty
 	if command.IsEmpty() {
 		return none, fmt.Errorf("command is required")
 	}
 
+	// Harden, then split into argv. Execution is always argv-based (no shell),
+	// so there is no shell interpolation.
+	norm, err := sanitizeCommand(command.GoString())
+	if err != nil {
+		return none, err
+	}
+	cmdToSplit := norm
+	if runtime.GOOS == "windows" {
+		// HACK: workaround for escape issue of creachadair/shell on Windows
+		cmdToSplit = strings.ReplaceAll(norm, `\`, `\\`)
+	}
+	parts, ok := sp.Split(cmdToSplit)
+	if !ok {
+		return none, fmt.Errorf("failed to parse command: invalid syntax or unclosed quotes")
+	}
+	if len(parts) == 0 {
+		return none, fmt.Errorf("empty command")
+	}
+
+	canonical := strings.Join(parts, " ")
+	if !commandAllowed(canonical, m.allow) {
+		return none, fmt.Errorf("cmd: command %q is not permitted by the allowlist", canonical)
+	}
+
 	// Process arguments with defaults
-	shellStr := getStringWithDefault(shell, m.ext.GetString(configKeyShell), findDefaultShell())
 	cwdStr := getStringWithDefault(cwd, m.ext.GetString(configKeyCwd), getCurrentDir())
 	stdinStr := stdin.GoString()
 	timeoutFloat := getTimeoutWithDefault(timeout, m.ext)
@@ -224,11 +271,9 @@ func (m *Module) run(thread *starlark.Thread, b *starlark.Builtin, args starlark
 	realtimeOutputBool := getBoolWithDefault(realtimeOutput, m.ext.GetBool(configKeyRealtimeOutput, false))
 	captureOutputBool := getBoolWithDefault(captureOutput, m.ext.GetBool(configKeyCaptureOutput, true))
 
-	// Build environment map
 	envMap := buildEnvMap(m.cfgMod, env)
 
-	// Execute command and get results
-	result, err := starExecuteCommand(thread, command.GoString(), shellStr, cwdStr, timeoutFloat, stdinStr, combineOutputBool, realtimeOutputBool, captureOutputBool, envMap)
+	result, err := executeArgv(thread, parts, cwdStr, timeoutFloat, stdinStr, combineOutputBool, realtimeOutputBool, captureOutputBool, envMap)
 	if err != nil {
 		return none, err
 	}
@@ -238,10 +283,10 @@ func (m *Module) run(thread *starlark.Thread, b *starlark.Builtin, args starlark
 
 // Helper functions for argument processing
 
-// getStringWithDefault returns the first non-empty string from the given options
+// getStringWithDefault returns the first non-empty string from the given options.
+// A null value yields the empty string (let the OS/process default apply).
 func getStringWithDefault(val *types.NullableStringOrBytes, fallbacks ...string) string {
 	if val.IsNull() {
-		// For shell parameter, null means don't use a shell
 		return ""
 	}
 	if str := val.GoString(); str != "" {
@@ -317,44 +362,10 @@ func (m *Module) starWhich(thread *starlark.Thread, b *starlark.Builtin, args st
 	return starlark.String(path), nil
 }
 
-// starFindShell is a Starlark function to get the appropriate system shell
-func (m *Module) starFindShell(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	return starlark.String(findDefaultShell()), nil
-}
-
-// starExecuteCommand runs a shell command with the specified options and returns a ProcessResult
-func starExecuteCommand(thread *starlark.Thread, command, shell, cwd string, timeout float64, stdin string, combineOutput bool, realtimeOutput bool, captureOutput bool, env map[string]string) (*ProcessResult, error) {
-	var cmd *exec.Cmd
-
-	// Create the result
+// executeArgv runs an already-split command (argv) with the specified options
+// and returns a ProcessResult. It never invokes a shell.
+func executeArgv(thread *starlark.Thread, args []string, cwd string, timeout float64, stdin string, combineOutput bool, realtimeOutput bool, captureOutput bool, env map[string]string) (*ProcessResult, error) {
 	result := &ProcessResult{}
-
-	// Setup command differently based on whether to use a shell or not
-	if shell == "" {
-		// Execute command directly without a shell
-
-		// HACK: workaround for escape issue of creachadair/shell on Windows
-		cmdToSplit := command
-		if runtime.GOOS == "windows" {
-			cmdToSplit = strings.ReplaceAll(command, `\`, `\\`)
-		}
-
-		parts, ok := sp.Split(cmdToSplit)
-		if !ok {
-			return nil, fmt.Errorf("failed to parse command: invalid syntax or unclosed quotes")
-		}
-		if len(parts) == 0 {
-			return nil, fmt.Errorf("empty command")
-		}
-
-		cmd = exec.Command(parts[0], parts[1:]...)
-	} else if runtime.GOOS == "windows" && (filepath.Base(shell) == "cmd.exe" || shell == "cmd") {
-		cmd = exec.Command(shell, "/C", command)
-	} else if filepath.Base(shell) == "powershell.exe" || filepath.Base(shell) == "pwsh.exe" || filepath.Base(shell) == "pwsh" {
-		cmd = exec.Command(shell, "-Command", command)
-	} else {
-		cmd = exec.Command(shell, "-c", command)
-	}
 
 	// Create context with timeout
 	ctx := dataconv.GetThreadContext(thread)
@@ -364,12 +375,7 @@ func starExecuteCommand(thread *starlark.Thread, command, shell, cwd string, tim
 		defer cancel()
 	}
 
-	// Create the command with context
-	if shell != "" {
-		cmd = exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
-	} else {
-		cmd = exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
-	}
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 
 	// Set working directory
 	if cwd != "" {
@@ -432,8 +438,7 @@ func starExecuteCommand(thread *starlark.Thread, command, shell, cwd string, tim
 	result.StartTime = time.Now()
 
 	// Execute command
-	err := cmd.Start()
-	if err != nil {
+	if err := cmd.Start(); err != nil {
 		result.Error = fmt.Sprintf("Failed to start command: %v", err)
 		return result, nil
 	}
@@ -442,7 +447,7 @@ func starExecuteCommand(thread *starlark.Thread, command, shell, cwd string, tim
 	result.PID = cmd.Process.Pid
 
 	// Wait for command to complete
-	err = cmd.Wait()
+	err := cmd.Wait()
 
 	// Record end time
 	result.EndTime = time.Now()
@@ -469,13 +474,11 @@ func starExecuteCommand(thread *starlark.Thread, command, shell, cwd string, tim
 	if captureOutput {
 		if combineOutput {
 			result.Output = combinedBuf.String()
-			// When combine_output is true, stdout and stderr are empty (will be set to None in createResultStruct)
 			result.Stdout = ""
 			result.Stderr = ""
 		} else {
 			result.Stdout = stdoutBuf.String()
 			result.Stderr = stderrBuf.String()
-			// When combine_output is false, output is empty (will be set to None in createResultStruct)
 			result.Output = ""
 		}
 	}
