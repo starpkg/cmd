@@ -149,6 +149,10 @@ not execute anything.
 - `NewModuleWithConfig(cwd, env, timeout, combineOutput, realtimeOutput, captureOutput)` — disabled, with preset defaults.
 - `NewModuleWithAllow(allow ...string)` — enabled, with the given allowlist.
 
+Note: `NewModuleWithConfig` returns a **disabled** module — there is no separate
+allow-setter, so to enable it you must construct the module via
+`NewModuleWithAllow(...)` (which sets the allowlist and enables execution).
+
 ### ProcessResult Struct
 
 The `ProcessResult` struct contains the following fields:
