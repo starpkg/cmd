@@ -1,5 +1,8 @@
 # 🐚 `cmd` — Starlark module for executing external commands
 
+[![codecov](https://codecov.io/gh/starpkg/cmd/graph/badge.svg)](https://codecov.io/gh/starpkg/cmd)
+![binary footprint](https://img.shields.io/badge/binary_footprint-%2B0.3_MB-blue)
+
 The `cmd` module lets Starlark scripts run external programs across Windows,
 macOS, and Linux. Execution is **always via argv** (`exec.Command`), never
 through a shell, and the module is **disabled by default** — the Go host must
