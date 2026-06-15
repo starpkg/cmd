@@ -3,11 +3,13 @@ package cmd_test
 // Behavior tests for the cmd module driven through a starlet machine.
 //
 // Sections:
-//   - which (executable lookup: found path / None when absent)
+//   - which (executable lookup: found path / None when absent / empty arg)
 //   - run error paths (disabled module / empty command / unclosed quote /
-//     non-allowlisted command)
+//     non-allowlisted command / Unicode-hardening rejection)
 //   - run options (env= / stdin= / combine_output= / capture_output= and the
 //     documented ProcessResult field shape)
+//   - failed execution result shape (nonzero exit; allowed-but-missing binary)
+//   - NewModuleWithConfig stays disabled (host policy is construction-bound)
 //   - cross-platform execution (real argv run + stdout capture proven per-OS;
 //     this section runs in CI on ubuntu/macos/windows)
 
@@ -53,6 +55,19 @@ print(p == None)
 			t.Errorf("which() of a missing executable should return None, got output:\n%s", out)
 		}
 	})
+
+	t.Run("empty command is rejected", func(t *testing.T) {
+		_, err := runScript(module, `
+load("cmd", "which")
+which("")
+`)
+		if err == nil {
+			t.Fatal("which(\"\") should error")
+		}
+		if !strings.Contains(err.Error(), "command is required") {
+			t.Errorf("which(empty) error %q should mention 'command is required'", err)
+		}
+	})
 }
 
 // --- run error paths ---------------------------------------------------------
@@ -87,6 +102,24 @@ func TestRunErrorPaths(t *testing.T) {
 			module: cmd.NewModuleWithAllow("go"),
 			script: `run("git status")`,
 			errSub: "not permitted by the allowlist",
+		},
+		{
+			// A zero-width space (U+200B) hidden between "go" and "version" must
+			// be rejected by sanitizeCommand before any matching/execution
+			// (PKG-09 invariant 4) — proving the hardening is wired into run().
+			// The literal U+200B byte is embedded in the raw string below.
+			name:   "zero-width character is rejected before matching",
+			module: cmd.NewModuleWithAllow("go"),
+			script: "run(\"go​version\")",
+			errSub: "format/zero-width character",
+		},
+		{
+			// A control character (newline) cannot smuggle a second command past
+			// the gate; it is rejected as a control character.
+			name:   "control character is rejected before matching",
+			module: cmd.NewModuleWithAllow("go"),
+			script: `run("go version\nrm -rf /")`,
+			errSub: "control character",
 		},
 	}
 
@@ -200,6 +233,73 @@ print("pid_positive:", r.pid > 0)
 			}
 		}
 	})
+}
+
+// --- failed execution result shape -------------------------------------------
+
+// A command that is allowlisted and runs but exits nonzero must yield
+// success=False with the real exit code and a None error (the process ran; it
+// just failed). `go <bad-subcommand>` is cross-platform and exits nonzero.
+func TestRunFailedCommandResult(t *testing.T) {
+	module := cmd.NewModuleWithAllow("go")
+
+	t.Run("nonzero exit reports failure with exit code", func(t *testing.T) {
+		out, err := runScript(module, `
+load("cmd", "run")
+r = run("go this-subcommand-does-not-exist")
+print("success:", r.success)
+print("nonzero:", r.exit_code != 0)
+print("error_none:", r.error == None)
+`)
+		if err != nil {
+			t.Fatalf("run of a failing command should not raise, got: %v", err)
+		}
+		for _, want := range []string{"success: False", "nonzero: True", "error_none: True"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("failed-command result missing %q, got:\n%s", want, out)
+			}
+		}
+	})
+
+	t.Run("allowlisted but missing binary reports a start error", func(t *testing.T) {
+		// The binary is permitted by the allowlist but not on PATH: run() must
+		// not raise; the failure surfaces in result.error, success is False.
+		missing := cmd.NewModuleWithAllow("definitely-not-real-xyz")
+		out, err := runScript(missing, `
+load("cmd", "run")
+r = run("definitely-not-real-xyz")
+print("success:", r.success)
+print("has_error:", r.error != None)
+`)
+		if err != nil {
+			t.Fatalf("run of a missing binary should not raise, got: %v", err)
+		}
+		if !strings.Contains(out, "success: False") {
+			t.Errorf("expected success=False, got:\n%s", out)
+		}
+		if !strings.Contains(out, "has_error: True") {
+			t.Errorf("a missing binary should populate result.error, got:\n%s", out)
+		}
+	})
+}
+
+// --- NewModuleWithConfig stays disabled --------------------------------------
+
+// NewModuleWithConfig presets behavioral defaults but does NOT enable execution
+// (PKG-09 invariant 1 / 6): there is no allow-setter, so run() still refuses
+// until the host constructs via NewModuleWithAllow.
+func TestNewModuleWithConfigDisabled(t *testing.T) {
+	module := cmd.NewModuleWithConfig("/tmp", map[string]string{"A": "b"}, 5, true, false, true)
+	_, err := runScript(module, `
+load("cmd", "run")
+run("go version")
+`)
+	if err == nil {
+		t.Fatal("NewModuleWithConfig must yield a disabled module; run() should error")
+	}
+	if !strings.Contains(err.Error(), "disabled") {
+		t.Errorf("error %q should report the module is disabled", err)
+	}
 }
 
 // --- cross-platform execution ------------------------------------------------
