@@ -29,13 +29,11 @@ script or by environment variables:
    BiDi overrides, BOM), which could otherwise hide or reorder text to slip past
    the allowlist.
 
-```go
-// Go host: enable cmd with an allowlist
-module := cmd.NewModuleWithAllow("go", "git status", "ls")
-loader := module.LoadModule()
-```
+The enable flag and allowlist are **not** configuration keys — they are set in
+Go via `NewModuleWithAllow` and cannot be widened by a script or environment
+variable.
 
-## Cross-platform note
+### Cross-platform note
 
 Because there is no shell, the first token must be a real **executable on
 `PATH`** for the current OS. Shell built-ins are *not* available as argv:
@@ -47,133 +45,80 @@ Because there is no shell, the first token must be a real **executable on
 
 Prefer real cross-platform tools (e.g. `go`, `git`) in portable scripts.
 
+## Installation
+
+```bash
+go get github.com/starpkg/cmd
+```
+
+## Quick Start
+
+Construct the module with an allowlist in Go, wire it into a Starlet
+interpreter, then `load("cmd", …)` from a script:
+
+```go
+package main
+
+import (
+    "fmt"
+
+    "github.com/1set/starlet"
+    "github.com/starpkg/cmd"
+)
+
+func main() {
+    // Enable execution with an allowlist (deny-by-default).
+    cmdModule := cmd.NewModuleWithAllow("go", "git status")
+    interpreter := starlet.New(
+        starlet.WithModuleLoader("cmd", cmdModule.LoadModule()),
+    )
+
+    script := `
+load("cmd", "run", "which")
+
+# Look up an executable without running anything.
+print("go at:", which("go"))
+
+# Run an allowlisted command and inspect the result.
+result = run("go version")
+print("ok:", result.success, "code:", result.exit_code)
+print(result.stdout)
+`
+
+    if err := interpreter.ExecScript("example.star", script); err != nil {
+        fmt.Println("Error:", err)
+    }
+}
+```
+
+For the complete per-builtin reference — signatures, parameters, returns,
+errors, examples — the `ProcessResult` fields, and the configuration accessors,
+see **[docs/API.md](docs/API.md)**.
+
+## Starlark API at a glance
+
+Top-level builtins (`load("cmd", …)`):
+
+- `run(command, cwd?, env?, stdin?, timeout?, combine_output?, realtime_output?, capture_output?)` — run an allowlisted command via argv; returns a `ProcessResult`.
+- `which(command)` — return the full path of an executable on `PATH`, or `None`; never executes.
+
+`run` returns a `ProcessResult` struct with fields `success`, `exit_code`,
+`stdout`, `stderr`, `output`, `error`, `pid`, `start_time`, `end_time`, and
+`duration`.
+
+See **[docs/API.md](docs/API.md)** for the full signatures, return values,
+errors, and examples of both builtins above.
+
 ## Configuration
 
-| Key | Type | Description | Default |
-|-----|------|-------------|---------|
-| `cwd` | string | Default working directory for commands | current directory |
-| `env` | dict | Environment variables added to every command | `{}` |
-| `timeout` | float | Default timeout in seconds (0 = none) | `0` |
-| `combine_output` | bool | Combine stdout and stderr | `false` |
-| `realtime_output` | bool | Echo output to the console in real time | `false` |
-| `capture_output` | bool | Capture output into the result | `true` |
+The module's behavioral defaults (`cwd`, `env`, `timeout`, `combine_output`,
+`realtime_output`, `capture_output`) are configured via environment variables
+(`CMD_*`) or per-option `get_<key>` / `set_<key>` accessor builtins, and serve
+as defaults for `run`. The enable flag and allowlist are **not** config — they
+are host-only and cannot be widened from a script. See the
+[Configuration section of docs/API.md](docs/API.md#configuration) for the full
+option table, defaults, and accessors.
 
-The enable flag and allowlist are **not** configuration keys — they are set in
-Go via `NewModuleWithAllow` and cannot be widened by a script or environment
-variable.
+## License
 
-## Usage
-
-### Running an allowlisted command
-
-```python
-load("cmd", "run")
-
-# Host enabled the module with allow=["go"]
-result = run("go version")
-print("ok:", result.success)      # True
-print("code:", result.exit_code)  # 0
-print(result.stdout)
-```
-
-### Working directory, timeout, and input
-
-```python
-load("cmd", "run")
-
-result = run("go env GOOS", cwd="/path/to/project", timeout=10)
-
-# Provide stdin to a program
-result = run("cat", stdin="hello from stdin")
-print(result.stdout)
-```
-
-### Environment variables
-
-Pass variables explicitly via `env=` — they are set in the child process
-environment (there is no `$VAR` interpolation in the command string):
-
-```python
-load("cmd", "run")
-
-result = run("go env GONOSUMCHECK", env={"GONOSUMCHECK": "1"})
-```
-
-### Capturing vs. combining output
-
-```python
-load("cmd", "run")
-
-# Combine stdout+stderr into result.output
-result = run("go vet ./...", combine_output=True)
-print(result.output)
-
-# Don't capture; stream to the console instead
-run("go build ./...", capture_output=False, realtime_output=True)
-```
-
-### Finding an executable
-
-```python
-load("cmd", "which")
-
-path = which("go")   # full path, or None if not on PATH
-```
-
-## API Reference
-
-### Functions
-
-#### `run(command, **kwargs)`
-
-Splits `command` into argv, checks it against the allowlist, and executes it
-directly. Returns a `ProcessResult` struct. Raises if the module is disabled or
-the command is not permitted.
-
-Parameters:
-
-- `command` (string, required): the command line (split into argv; no shell)
-- `cwd` (string, optional): working directory (default: configured / current)
-- `env` (dict, optional): extra environment variables
-- `stdin` (string, optional): input to provide on stdin
-- `timeout` (float, optional): max execution time in seconds (default: 0 = none)
-- `combine_output` (bool, optional): combine stdout and stderr (default: false)
-- `realtime_output` (bool, optional): echo to console in real time (default: false)
-- `capture_output` (bool, optional): capture output (default: true)
-
-#### `which(command)`
-
-Returns the full path to an executable on `PATH`, or `None` if not found. Does
-not execute anything.
-
-### Constructors (Go)
-
-- `NewModule()` — disabled; `run()` always errors.
-- `NewModuleWithConfig(cwd, env, timeout, combineOutput, realtimeOutput, captureOutput)` — disabled, with preset defaults.
-- `NewModuleWithAllow(allow ...string)` — enabled, with the given allowlist.
-
-Note: `NewModuleWithConfig` returns a **disabled** module — there is no separate
-allow-setter, so to enable it you must construct the module via
-`NewModuleWithAllow(...)` (which sets the allowlist and enables execution).
-
-### ProcessResult Struct
-
-The `ProcessResult` struct contains the following fields:
-
-- `success` (bool): True if the command exited with code 0
-- `exit_code` (int): the command's exit code
-- `stdout` (string or None): standard output (if not combined and captured)
-- `stderr` (string or None): standard error (if not combined and captured)
-- `output` (string or None): combined output (when combined and captured)
-- `error` (string or None): error message for execution failures
-- `pid` (int): process ID
-- `start_time` (time): start timestamp as a Starlark time value
-- `end_time` (time): end timestamp as a Starlark time value
-- `duration` (duration): execution time as a Starlark duration value
-
-Notes:
-
-- When `combine_output=True`, only `output` has data; `stdout`/`stderr` are None.
-- When `combine_output=False`, only `stdout`/`stderr` have data; `output` is None.
-- When `capture_output=False`, all output fields are None.
-- The time fields work with Starlark's `time` module.
+MIT
