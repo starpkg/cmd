@@ -67,13 +67,14 @@ type ProcessResult struct {
 }
 
 // Module wraps the ConfigurableModule with specific functionality for command execution.
-// enabled and allow are host policy (set in Go) and are never overridable by a
-// script or by environment variables.
+// enabled, allow and allowAll are host policy (set in Go) and are never
+// overridable by a script or by environment variables.
 type Module struct {
-	cfgMod  *base.ConfigurableModule
-	ext     *base.ConfigurableModuleExt
-	enabled bool
-	allow   []string
+	cfgMod   *base.ConfigurableModule
+	ext      *base.ConfigurableModuleExt
+	enabled  bool
+	allow    []string
+	allowAll bool
 }
 
 // NewModule creates a new instance of Module with default configurations.
@@ -112,6 +113,23 @@ func NewModuleWithAllow(allow ...string) *Module {
 	m := NewModule()
 	m.enabled = true
 	m.allow = append([]string(nil), allow...)
+	return m
+}
+
+// NewModuleWithAllowAll returns a module that is ENABLED and permits EVERY
+// command — the allowlist check is bypassed entirely. This is the explicit
+// "dangerous, run anything" escape hatch for a host that has already decided the
+// caller is fully trusted (e.g. a CLI operator who passed a --dangerously-allow-all
+// style flag); prefer NewModuleWithAllow with a specific allowlist whenever the
+// set of commands is known. It still applies the same input hardening as every
+// other path (sanitizeCommand rejects control / zero-width characters, and
+// execution stays argv-only — never a shell). Like enable and allow, the
+// allow-all decision is Go-host state bound at construction: nothing a script
+// does, and no environment variable, can set or widen it.
+func NewModuleWithAllowAll() *Module {
+	m := NewModule()
+	m.enabled = true
+	m.allowAll = true
 	return m
 }
 
@@ -258,8 +276,10 @@ func (m *Module) run(thread *starlark.Thread, b *starlark.Builtin, args starlark
 		return none, fmt.Errorf("empty command")
 	}
 
+	// allowAll bypasses the allowlist (but never the sanitization above); a
+	// bounded allowlist is still consulted for every other enabled module.
 	canonical := strings.Join(parts, " ")
-	if !commandAllowed(canonical, m.allow) {
+	if !m.allowAll && !commandAllowed(canonical, m.allow) {
 		return none, fmt.Errorf("cmd: command %q is not permitted by the allowlist", canonical)
 	}
 

@@ -28,10 +28,17 @@ script or by environment variables:
    characters or Unicode format/zero-width characters (e.g. zero-width space,
    BiDi overrides, BOM), which could otherwise hide or reorder text to slip past
    the allowlist.
+5. **Explicit allow-all escape hatch.** `cmd.NewModuleWithAllowAll()` enables the
+   module and bypasses the allowlist entirely — every command runs. It is the
+   deliberate "dangerous, run anything" path for a host that has already decided
+   the caller is fully trusted (e.g. a CLI behind a `--dangerously-allow-all` style
+   flag). The input hardening above (argv-only, no shell, Unicode rejection) still
+   applies; only the allowlist is skipped. Prefer `NewModuleWithAllow` with a
+   specific allowlist whenever the command set is known.
 
-The enable flag and allowlist are **not** configuration keys — they are set in
-Go via `NewModuleWithAllow` and cannot be widened by a script or environment
-variable.
+The enable flag, allowlist, and allow-all decision are **not** configuration keys
+— they are set in Go via `NewModuleWithAllow` / `NewModuleWithAllowAll` and cannot
+be widened by a script or environment variable.
 
 ### Cross-platform note
 
