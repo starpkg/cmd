@@ -6,6 +6,8 @@ package cmd_test
 //   - which (executable lookup: found path / None when absent / empty arg)
 //   - run error paths (disabled module / empty command / unclosed quote /
 //     non-allowlisted command / Unicode-hardening rejection)
+//   - allow-all escape hatch (NewModuleWithAllowAll bypasses the allowlist but
+//     not the input hardening)
 //   - run options (env= / stdin= / combine_output= / capture_output= and the
 //     documented ProcessResult field shape)
 //   - failed execution result shape (nonzero exit; allowed-but-missing binary)
@@ -134,6 +136,47 @@ func TestRunErrorPaths(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- allow-all escape hatch --------------------------------------------------
+
+// TestRunAllowAll proves NewModuleWithAllowAll bypasses the allowlist (any
+// command runs even though no allowlist entry permits it) while still applying
+// the PKG-09 input hardening — a control/zero-width character is rejected.
+func TestRunAllowAll(t *testing.T) {
+	module := cmd.NewModuleWithAllowAll()
+
+	t.Run("an un-allowlisted command runs", func(t *testing.T) {
+		// "go" is on PATH in CI on every OS, and this module has no allowlist —
+		// a non-allow-all module would deny it, so success proves the bypass.
+		out, err := runScript(module, `
+load("cmd", "run")
+res = run("go version")
+print(res.success)
+print("go version" in res.stdout)
+`)
+		if err != nil {
+			t.Fatalf("allow-all run('go version') errored: %v", err)
+		}
+		if strings.Count(out, "True") < 2 {
+			t.Errorf("allow-all should run an un-allowlisted command successfully, got:\n%s", out)
+		}
+	})
+
+	t.Run("input hardening still applies", func(t *testing.T) {
+		// allow-all bypasses the allowlist, never sanitizeCommand: a control
+		// character (newline that could smuggle a second command) is rejected.
+		_, err := runScript(module, `
+load("cmd", "run")
+run("go version\nrm -rf /")
+`)
+		if err == nil {
+			t.Fatal("allow-all must still reject a control character")
+		}
+		if !strings.Contains(err.Error(), "control character") {
+			t.Errorf("error %q should mention 'control character'", err)
+		}
+	})
 }
 
 // --- run options -------------------------------------------------------------
