@@ -29,6 +29,7 @@ import (
 	"github.com/1set/starlet/dataconv"
 	"github.com/1set/starlet/dataconv/types"
 	"github.com/starpkg/base"
+	"github.com/starpkg/base/util"
 	startime "go.starlark.net/lib/time"
 	"go.starlark.net/starlark"
 	"go.starlark.net/starlarkstruct"
@@ -137,10 +138,7 @@ func NewModuleWithAllowAll() *Module {
 
 // genConfigOption creates a configuration option with common settings
 func genConfigOption[T any](name, description string, defaultValue T) *base.ConfigOption[T] {
-	return base.NewConfigOption(defaultValue).
-		WithName(name).
-		WithDescription(description).
-		WithEnvVar(strings.ToUpper(ModuleName + "_" + name))
+	return base.NewNamedConfigOption(ModuleName, name, description, defaultValue)
 }
 
 // newModuleWithOptions creates a Module with the given configuration options
@@ -337,6 +335,46 @@ func getBoolWithDefault(val *types.NullableBool, defaultVal bool) bool {
 	return bool(val.Value().Truth())
 }
 
+// safeHostEnvKeys is the allowlist of host environment variables a spawned
+// process inherits: operational, non-secret variables common tools need.
+// Everything else — API keys, tokens, and other host secrets — is withheld.
+var safeHostEnvKeys = []string{
+	"PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "TZ", "PWD",
+	"LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_MESSAGES",
+	"TMPDIR", "TMP", "TEMP",
+	// Proxy and TLS-trust settings: not secrets, and dropping them breaks
+	// legitimate network tools (a proxy, a private CA) run behind the allowlist.
+	"HTTP_PROXY", "HTTPS_PROXY", "FTP_PROXY", "ALL_PROXY", "NO_PROXY",
+	"http_proxy", "https_proxy", "ftp_proxy", "all_proxy", "no_proxy",
+	"SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO",
+	// Windows essentials
+	"SystemRoot", "SystemDrive", "windir", "ComSpec", "PATHEXT",
+	"USERPROFILE", "APPDATA", "LOCALAPPDATA", "ProgramData",
+	"ProgramFiles", "ProgramFiles(x86)", "NUMBER_OF_PROCESSORS",
+	"PROCESSOR_ARCHITECTURE",
+}
+
+// stripDangerousEnv returns a copy of env without dynamic-linker preload
+// variables, which could otherwise inject attacker-controlled code into an
+// allowlisted binary and bypass the command allowlist. Covers the glibc/musl
+// (LD_*), macOS (DYLD_*), and AIX (LDR_*) loader families.
+//
+// Note: this closes the universal loader-injection class only. App-specific
+// env vars that also run code (e.g. GIT_CONFIG_*, BASH_ENV, interpreter startup
+// hooks) are an open-ended surface a blocklist cannot fully cover; constraining
+// script-supplied env to an allowlist is tracked separately.
+func stripDangerousEnv(env map[string]string) map[string]string {
+	out := make(map[string]string, len(env))
+	for k, v := range env {
+		u := strings.ToUpper(k)
+		if strings.HasPrefix(u, "LD_") || strings.HasPrefix(u, "DYLD_") || strings.HasPrefix(u, "LDR_") {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
 // buildEnvMap creates an environment map from default and custom values
 func buildEnvMap(cfgMod *base.ConfigurableModule, env *starlark.Dict) map[string]string {
 	// Get default environment
@@ -384,6 +422,37 @@ func (m *Module) starWhich(thread *starlark.Thread, b *starlark.Builtin, args st
 
 // executeArgv runs an already-split command (argv) with the specified options
 // and returns a ProcessResult. It never invokes a shell.
+// captureBufs holds the stdout/stderr/combined capture buffers so they travel
+// as a single value (keeping helper signatures within the argument limit).
+type captureBufs struct {
+	stdout, stderr, combined *bytes.Buffer
+}
+
+// setupCapture wires cmd's stdout/stderr according to the capture/combine/
+// realtime flags and returns the buffers the caller reads after the process
+// exits. When captureOutput is false nothing is buffered (only optionally
+// mirrored live); the returned buffers stay empty.
+func setupCapture(cmd *exec.Cmd, combineOutput, realtimeOutput, captureOutput bool) *captureBufs {
+	b := &captureBufs{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, combined: &bytes.Buffer{}}
+	if !captureOutput {
+		if realtimeOutput {
+			cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+		}
+		return b
+	}
+	out, errOut := b.stdout, b.stderr
+	if combineOutput {
+		out, errOut = b.combined, b.combined
+	}
+	if realtimeOutput {
+		cmd.Stdout = io.MultiWriter(out, os.Stdout)
+		cmd.Stderr = io.MultiWriter(errOut, os.Stderr)
+	} else {
+		cmd.Stdout, cmd.Stderr = out, errOut
+	}
+	return b
+}
+
 func executeArgv(thread *starlark.Thread, args []string, cwd string, timeout float64, stdin string, combineOutput bool, realtimeOutput bool, captureOutput bool, env map[string]string) (*ProcessResult, error) {
 	result := &ProcessResult{}
 
@@ -391,30 +460,32 @@ func executeArgv(thread *starlark.Thread, args []string, cwd string, timeout flo
 	ctx := dataconv.GetThreadContext(thread)
 	if timeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+		// Scale to nanoseconds as a float BEFORE converting to Duration:
+		// time.Duration(timeout)*time.Second truncates a fractional-second timeout
+		// (0.5 -> Duration(0) -> immediate expiry), silently weakening the limit.
+		ctx, cancel = context.WithTimeout(ctx, util.DurationFromSeconds(timeout))
 		defer cancel()
 	}
 
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 
-	// Set working directory
+	// Build the child environment from an allowlist of safe host variables plus
+	// the script/config-supplied ones, instead of inheriting the host's full
+	// os.Environ() (which leaks every host secret) or falling back to it when env
+	// is empty. Dynamic-linker variables (LD_*/DYLD_*) are stripped so a script
+	// cannot preload attacker code into an allowlisted binary and run arbitrary
+	// code — which would defeat the command allowlist.
+	childEnv := stripDangerousEnv(env)
+
+	// Set working directory. Because we always supply cmd.Env, os/exec no longer
+	// auto-syncs PWD to cmd.Dir, so set it here to keep PWD and the real cwd in
+	// step (a shell/tool reading PWD would otherwise see a stale value).
 	if cwd != "" {
 		cmd.Dir = cwd
+		childEnv["PWD"] = cwd
 	}
 
-	// Setup environment
-	if len(env) > 0 {
-		// Start with current environment
-		cmd.Env = os.Environ()
-		// Add custom environment variables
-		for k, v := range env {
-			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
-		}
-	}
-
-	// Setup input/output
-	var stdoutBuf, stderrBuf bytes.Buffer
-	var combinedBuf bytes.Buffer
+	cmd.Env = util.BuildChildEnv(os.Environ(), safeHostEnvKeys, childEnv)
 
 	// Setup stdin if provided
 	if stdin != "" {
@@ -422,37 +493,7 @@ func executeArgv(thread *starlark.Thread, args []string, cwd string, timeout flo
 	}
 
 	// Setup stdout/stderr capture based on capture_output and combine_output flags
-	if captureOutput {
-		if combineOutput {
-			// Combined output mode
-			if realtimeOutput {
-				// Real-time output with combined streams
-				cmd.Stdout = io.MultiWriter(&combinedBuf, os.Stdout)
-				cmd.Stderr = io.MultiWriter(&combinedBuf, os.Stderr)
-			} else {
-				// Capture without real-time display
-				cmd.Stdout = &combinedBuf
-				cmd.Stderr = &combinedBuf
-			}
-		} else {
-			// Separate stdout/stderr mode
-			if realtimeOutput {
-				// Real-time output with separate streams
-				cmd.Stdout = io.MultiWriter(&stdoutBuf, os.Stdout)
-				cmd.Stderr = io.MultiWriter(&stderrBuf, os.Stderr)
-			} else {
-				// Capture without real-time display
-				cmd.Stdout = &stdoutBuf
-				cmd.Stderr = &stderrBuf
-			}
-		}
-	} else {
-		// No capture, just show output in real-time if requested
-		if realtimeOutput {
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-		}
-	}
+	bufs := setupCapture(cmd, combineOutput, realtimeOutput, captureOutput)
 
 	// Record start time
 	result.StartTime = time.Now()
@@ -473,7 +514,13 @@ func executeArgv(thread *starlark.Thread, args []string, cwd string, timeout flo
 	result.EndTime = time.Now()
 	result.Duration = result.EndTime.Sub(result.StartTime)
 
-	// Handle completion
+	finalizeResult(ctx, result, err, timeout, bufs, combineOutput, captureOutput)
+	return result, nil
+}
+
+// finalizeResult records the exit status (or timeout/failure error) and the
+// captured output onto result after the process has been waited on.
+func finalizeResult(ctx context.Context, result *ProcessResult, err error, timeout float64, bufs *captureBufs, combineOutput, captureOutput bool) {
 	if err != nil {
 		result.Success = false
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -481,7 +528,7 @@ func executeArgv(thread *starlark.Thread, args []string, cwd string, timeout flo
 		} else {
 			result.Error = fmt.Sprintf("Command failed: %v", err)
 		}
-		// Check if the context was canceled due to timeout, even if Wait() didn't return an error
+		// Report a timeout even if Wait() surfaced a different (kill) error.
 		if ctx.Err() == context.DeadlineExceeded && result.Error == "" {
 			result.Error = fmt.Sprintf("Command timed out after %.2f seconds", timeout)
 		}
@@ -490,20 +537,15 @@ func executeArgv(thread *starlark.Thread, args []string, cwd string, timeout flo
 		result.ExitCode = 0
 	}
 
-	// Set output based on capture settings
-	if captureOutput {
-		if combineOutput {
-			result.Output = combinedBuf.String()
-			result.Stdout = ""
-			result.Stderr = ""
-		} else {
-			result.Stdout = stdoutBuf.String()
-			result.Stderr = stderrBuf.String()
-			result.Output = ""
-		}
+	if !captureOutput {
+		return
 	}
-
-	return result, nil
+	if combineOutput {
+		result.Output = bufs.combined.String()
+	} else {
+		result.Stdout = bufs.stdout.String()
+		result.Stderr = bufs.stderr.String()
+	}
 }
 
 // createResultStruct converts a ProcessResult to a Starlark struct

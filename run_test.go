@@ -16,6 +16,7 @@ package cmd_test
 //     this section runs in CI on ubuntu/macos/windows)
 
 import (
+	"os/exec"
 	"runtime"
 	"strings"
 	"testing"
@@ -376,5 +377,67 @@ print("goos:", r.stdout.strip())
 	wantGOOS := "goos: " + runtime.GOOS
 	if !strings.Contains(out, wantGOOS) {
 		t.Errorf("expected stdout to report host GOOS %q (%q), got:\n%s", runtime.GOOS, wantGOOS, out)
+	}
+}
+
+// TestSubsecondTimeout verifies a fractional-second timeout is honored (not
+// truncated to zero and firing immediately). A fast command finishes well within
+// 0.5s and must succeed rather than being killed at once (STAR-83).
+func TestSubsecondTimeout(t *testing.T) {
+	module := cmd.NewModuleWithAllow("go")
+	out, err := runScript(module, `
+load("cmd", "run")
+r = run("go version", timeout=0.5)
+print("success:", r.success)
+`)
+	if err != nil {
+		t.Fatalf("run with subsecond timeout errored: %v", err)
+	}
+	if !strings.Contains(out, "success: True") {
+		t.Errorf("timeout=0.5 truncated to 0 and killed the command immediately, got:\n%s", out)
+	}
+}
+
+// TestHostEnvNotInherited verifies a spawned process does NOT inherit the host's
+// full environment: a host variable outside the safe allowlist (here GOPATH) is
+// not visible to the child, so host secrets can't leak (STAR-84).
+func TestHostEnvNotInherited(t *testing.T) {
+	t.Setenv("GOPATH", "/leaked-host-gopath-should-not-appear")
+	module := cmd.NewModuleWithAllow("go")
+	out, err := runScript(module, `
+load("cmd", "run")
+r = run("go env GOPATH")
+print("gopath:", r.stdout.strip())
+`)
+	if err != nil {
+		t.Fatalf("run errored: %v", err)
+	}
+	if strings.Contains(out, "/leaked-host-gopath-should-not-appear") {
+		t.Errorf("child inherited the host GOPATH — the full host env is being leaked:\n%s", out)
+	}
+}
+
+// TestChildEnvPWDMatchesCwd verifies PWD tracks the working directory. Because
+// cmd.Env is always supplied, os/exec no longer auto-syncs PWD to cmd.Dir, so
+// the module sets it explicitly; a tool reading PWD must see the real cwd.
+func TestChildEnvPWDMatchesCwd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("PWD is a POSIX convention")
+	}
+	if _, err := exec.LookPath("printenv"); err != nil {
+		t.Skip("printenv not available")
+	}
+	dir := t.TempDir()
+	module := cmd.NewModuleWithAllow("printenv")
+	out, err := runScript(module, `
+load("cmd", "run")
+r = run("printenv PWD", cwd="`+dir+`")
+print("pwd:", r.stdout.strip())
+`)
+	if err != nil {
+		t.Fatalf("run errored: %v", err)
+	}
+	if !strings.Contains(out, "pwd: "+dir) {
+		t.Errorf("PWD should equal cwd %q, got:\n%s", dir, out)
 	}
 }
