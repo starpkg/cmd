@@ -416,3 +416,25 @@ func TestCreateResultStructShape(t *testing.T) {
 		}
 	})
 }
+
+// TestStripDangerousEnv verifies dynamic-linker variables (the allowlist-bypass
+// vector) are removed from a script's env while ordinary variables are kept.
+func TestStripDangerousEnv(t *testing.T) {
+	in := map[string]string{
+		"LD_PRELOAD":            "/evil.so",
+		"LD_LIBRARY_PATH":       "/evil",
+		"DYLD_INSERT_LIBRARIES": "/evil.dylib",
+		"ld_preload":            "/evil-lower.so",
+		"FOO":                   "bar",
+		"GOOS":                  "js",
+	}
+	out := stripDangerousEnv(in)
+	for _, bad := range []string{"LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "ld_preload"} {
+		if _, ok := out[bad]; ok {
+			t.Errorf("%s should be stripped", bad)
+		}
+	}
+	if out["FOO"] != "bar" || out["GOOS"] != "js" {
+		t.Errorf("ordinary vars should be kept, got %v", out)
+	}
+}
