@@ -508,13 +508,13 @@ func executeArgv(thread *starlark.Thread, args []string, cwd string, timeout flo
 	result.EndTime = time.Now()
 	result.Duration = result.EndTime.Sub(result.StartTime)
 
-	finalizeResult(result, err, ctx, timeout, stdoutBuf, stderrBuf, combinedBuf, combineOutput, captureOutput)
+	finalizeResult(ctx, result, err, timeout, stdoutBuf, stderrBuf, combinedBuf, combineOutput, captureOutput)
 	return result, nil
 }
 
 // finalizeResult records the exit status (or timeout/failure error) and the
 // captured output onto result after the process has been waited on.
-func finalizeResult(result *ProcessResult, err error, ctx context.Context, timeout float64, stdoutBuf, stderrBuf, combinedBuf *bytes.Buffer, combineOutput, captureOutput bool) {
+func finalizeResult(ctx context.Context, result *ProcessResult, err error, timeout float64, stdoutBuf, stderrBuf, combinedBuf *bytes.Buffer, combineOutput, captureOutput bool) {
 	if err != nil {
 		result.Success = false
 		if exitErr, ok := err.(*exec.ExitError); ok {
