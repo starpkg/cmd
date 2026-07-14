@@ -422,21 +422,27 @@ func (m *Module) starWhich(thread *starlark.Thread, b *starlark.Builtin, args st
 
 // executeArgv runs an already-split command (argv) with the specified options
 // and returns a ProcessResult. It never invokes a shell.
+// captureBufs holds the stdout/stderr/combined capture buffers so they travel
+// as a single value (keeping helper signatures within the argument limit).
+type captureBufs struct {
+	stdout, stderr, combined *bytes.Buffer
+}
+
 // setupCapture wires cmd's stdout/stderr according to the capture/combine/
 // realtime flags and returns the buffers the caller reads after the process
 // exits. When captureOutput is false nothing is buffered (only optionally
 // mirrored live); the returned buffers stay empty.
-func setupCapture(cmd *exec.Cmd, combineOutput, realtimeOutput, captureOutput bool) (stdoutBuf, stderrBuf, combinedBuf *bytes.Buffer) {
-	stdoutBuf, stderrBuf, combinedBuf = &bytes.Buffer{}, &bytes.Buffer{}, &bytes.Buffer{}
+func setupCapture(cmd *exec.Cmd, combineOutput, realtimeOutput, captureOutput bool) *captureBufs {
+	b := &captureBufs{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, combined: &bytes.Buffer{}}
 	if !captureOutput {
 		if realtimeOutput {
 			cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		}
-		return
+		return b
 	}
-	out, errOut := stdoutBuf, stderrBuf
+	out, errOut := b.stdout, b.stderr
 	if combineOutput {
-		out, errOut = combinedBuf, combinedBuf
+		out, errOut = b.combined, b.combined
 	}
 	if realtimeOutput {
 		cmd.Stdout = io.MultiWriter(out, os.Stdout)
@@ -444,7 +450,7 @@ func setupCapture(cmd *exec.Cmd, combineOutput, realtimeOutput, captureOutput bo
 	} else {
 		cmd.Stdout, cmd.Stderr = out, errOut
 	}
-	return
+	return b
 }
 
 func executeArgv(thread *starlark.Thread, args []string, cwd string, timeout float64, stdin string, combineOutput bool, realtimeOutput bool, captureOutput bool, env map[string]string) (*ProcessResult, error) {
@@ -487,7 +493,7 @@ func executeArgv(thread *starlark.Thread, args []string, cwd string, timeout flo
 	}
 
 	// Setup stdout/stderr capture based on capture_output and combine_output flags
-	stdoutBuf, stderrBuf, combinedBuf := setupCapture(cmd, combineOutput, realtimeOutput, captureOutput)
+	bufs := setupCapture(cmd, combineOutput, realtimeOutput, captureOutput)
 
 	// Record start time
 	result.StartTime = time.Now()
@@ -508,13 +514,13 @@ func executeArgv(thread *starlark.Thread, args []string, cwd string, timeout flo
 	result.EndTime = time.Now()
 	result.Duration = result.EndTime.Sub(result.StartTime)
 
-	finalizeResult(ctx, result, err, timeout, stdoutBuf, stderrBuf, combinedBuf, combineOutput, captureOutput)
+	finalizeResult(ctx, result, err, timeout, bufs, combineOutput, captureOutput)
 	return result, nil
 }
 
 // finalizeResult records the exit status (or timeout/failure error) and the
 // captured output onto result after the process has been waited on.
-func finalizeResult(ctx context.Context, result *ProcessResult, err error, timeout float64, stdoutBuf, stderrBuf, combinedBuf *bytes.Buffer, combineOutput, captureOutput bool) {
+func finalizeResult(ctx context.Context, result *ProcessResult, err error, timeout float64, bufs *captureBufs, combineOutput, captureOutput bool) {
 	if err != nil {
 		result.Success = false
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -535,10 +541,10 @@ func finalizeResult(ctx context.Context, result *ProcessResult, err error, timeo
 		return
 	}
 	if combineOutput {
-		result.Output = combinedBuf.String()
+		result.Output = bufs.combined.String()
 	} else {
-		result.Stdout = stdoutBuf.String()
-		result.Stderr = stderrBuf.String()
+		result.Stdout = bufs.stdout.String()
+		result.Stderr = bufs.stderr.String()
 	}
 }
 
