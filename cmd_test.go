@@ -424,17 +424,33 @@ func TestStripDangerousEnv(t *testing.T) {
 		"LD_PRELOAD":            "/evil.so",
 		"LD_LIBRARY_PATH":       "/evil",
 		"DYLD_INSERT_LIBRARIES": "/evil.dylib",
+		"LDR_PRELOAD":           "/evil.a", // AIX loader
+		"LDR_PRELOAD64":         "/evil64.a",
 		"ld_preload":            "/evil-lower.so",
 		"FOO":                   "bar",
 		"GOOS":                  "js",
 	}
 	out := stripDangerousEnv(in)
-	for _, bad := range []string{"LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "ld_preload"} {
+	for _, bad := range []string{"LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "LDR_PRELOAD", "LDR_PRELOAD64", "ld_preload"} {
 		if _, ok := out[bad]; ok {
 			t.Errorf("%s should be stripped", bad)
 		}
 	}
 	if out["FOO"] != "bar" || out["GOOS"] != "js" {
 		t.Errorf("ordinary vars should be kept, got %v", out)
+	}
+}
+
+// TestSafeHostEnvIncludesProxyAndCA guards the allowlist against dropping the
+// proxy/TLS-trust variables that legitimate network tools need behind the gate.
+func TestSafeHostEnvIncludesProxyAndCA(t *testing.T) {
+	have := make(map[string]bool, len(safeHostEnvKeys))
+	for _, k := range safeHostEnvKeys {
+		have[k] = true
+	}
+	for _, want := range []string{"HTTPS_PROXY", "https_proxy", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR"} {
+		if !have[want] {
+			t.Errorf("safeHostEnvKeys should include %q so network tools work behind the allowlist", want)
+		}
 	}
 }

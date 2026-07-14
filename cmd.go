@@ -342,6 +342,11 @@ var safeHostEnvKeys = []string{
 	"PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "TZ", "PWD",
 	"LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_MESSAGES",
 	"TMPDIR", "TMP", "TEMP",
+	// Proxy and TLS-trust settings: not secrets, and dropping them breaks
+	// legitimate network tools (a proxy, a private CA) run behind the allowlist.
+	"HTTP_PROXY", "HTTPS_PROXY", "FTP_PROXY", "ALL_PROXY", "NO_PROXY",
+	"http_proxy", "https_proxy", "ftp_proxy", "all_proxy", "no_proxy",
+	"SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO",
 	// Windows essentials
 	"SystemRoot", "SystemDrive", "windir", "ComSpec", "PATHEXT",
 	"USERPROFILE", "APPDATA", "LOCALAPPDATA", "ProgramData",
@@ -349,14 +354,20 @@ var safeHostEnvKeys = []string{
 	"PROCESSOR_ARCHITECTURE",
 }
 
-// stripDangerousEnv returns a copy of env without dynamic-linker variables
-// (LD_*/DYLD_*), which could otherwise preload attacker-controlled code into an
-// allowlisted binary and bypass the command allowlist.
+// stripDangerousEnv returns a copy of env without dynamic-linker preload
+// variables, which could otherwise inject attacker-controlled code into an
+// allowlisted binary and bypass the command allowlist. Covers the glibc/musl
+// (LD_*), macOS (DYLD_*), and AIX (LDR_*) loader families.
+//
+// Note: this closes the universal loader-injection class only. App-specific
+// env vars that also run code (e.g. GIT_CONFIG_*, BASH_ENV, interpreter startup
+// hooks) are an open-ended surface a blocklist cannot fully cover; constraining
+// script-supplied env to an allowlist is tracked separately.
 func stripDangerousEnv(env map[string]string) map[string]string {
 	out := make(map[string]string, len(env))
 	for k, v := range env {
 		u := strings.ToUpper(k)
-		if strings.HasPrefix(u, "LD_") || strings.HasPrefix(u, "DYLD_") {
+		if strings.HasPrefix(u, "LD_") || strings.HasPrefix(u, "DYLD_") || strings.HasPrefix(u, "LDR_") {
 			continue
 		}
 		out[k] = v
@@ -452,18 +463,23 @@ func executeArgv(thread *starlark.Thread, args []string, cwd string, timeout flo
 
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 
-	// Set working directory
-	if cwd != "" {
-		cmd.Dir = cwd
-	}
-
 	// Build the child environment from an allowlist of safe host variables plus
 	// the script/config-supplied ones, instead of inheriting the host's full
 	// os.Environ() (which leaks every host secret) or falling back to it when env
 	// is empty. Dynamic-linker variables (LD_*/DYLD_*) are stripped so a script
 	// cannot preload attacker code into an allowlisted binary and run arbitrary
 	// code — which would defeat the command allowlist.
-	cmd.Env = util.BuildChildEnv(os.Environ(), safeHostEnvKeys, stripDangerousEnv(env))
+	childEnv := stripDangerousEnv(env)
+
+	// Set working directory. Because we always supply cmd.Env, os/exec no longer
+	// auto-syncs PWD to cmd.Dir, so set it here to keep PWD and the real cwd in
+	// step (a shell/tool reading PWD would otherwise see a stale value).
+	if cwd != "" {
+		cmd.Dir = cwd
+		childEnv["PWD"] = cwd
+	}
+
+	cmd.Env = util.BuildChildEnv(os.Environ(), safeHostEnvKeys, childEnv)
 
 	// Setup stdin if provided
 	if stdin != "" {

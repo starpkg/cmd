@@ -16,6 +16,7 @@ package cmd_test
 //     this section runs in CI on ubuntu/macos/windows)
 
 import (
+	"os/exec"
 	"runtime"
 	"strings"
 	"testing"
@@ -413,5 +414,30 @@ print("gopath:", r.stdout.strip())
 	}
 	if strings.Contains(out, "/leaked-host-gopath-should-not-appear") {
 		t.Errorf("child inherited the host GOPATH — the full host env is being leaked:\n%s", out)
+	}
+}
+
+// TestChildEnvPWDMatchesCwd verifies PWD tracks the working directory. Because
+// cmd.Env is always supplied, os/exec no longer auto-syncs PWD to cmd.Dir, so
+// the module sets it explicitly; a tool reading PWD must see the real cwd.
+func TestChildEnvPWDMatchesCwd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("PWD is a POSIX convention")
+	}
+	if _, err := exec.LookPath("printenv"); err != nil {
+		t.Skip("printenv not available")
+	}
+	dir := t.TempDir()
+	module := cmd.NewModuleWithAllow("printenv")
+	out, err := runScript(module, `
+load("cmd", "run")
+r = run("printenv PWD", cwd="`+dir+`")
+print("pwd:", r.stdout.strip())
+`)
+	if err != nil {
+		t.Fatalf("run errored: %v", err)
+	}
+	if !strings.Contains(out, "pwd: "+dir) {
+		t.Errorf("PWD should equal cwd %q, got:\n%s", dir, out)
 	}
 }

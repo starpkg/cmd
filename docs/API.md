@@ -42,7 +42,7 @@ globbing) are **not** interpreted. Pass environment variables explicitly via
 
 - `command` (string, required): the command line, split into argv (no shell)
 - `cwd` (string, optional): working directory (default: the `cwd` config option, else the current directory)
-- `env` (dict, optional): extra environment variables, merged on top of the `env` config option and the host process environment
+- `env` (dict, optional): extra environment variables, merged on top of the `env` config option. The child does **not** inherit the host's full environment: only an allowlist of safe, non-secret operational variables (e.g. `PATH`, `HOME`, `TZ`, proxy/CA settings) is passed through, so host secrets are withheld. Dynamic-linker preload variables (`LD_*`/`DYLD_*`/`LDR_*`) are stripped even when supplied here.
 - `stdin` (string, optional): input written to the command's standard input
 - `timeout` (float, optional): max execution time in seconds (default: the `timeout` config option; `0` = no limit)
 - `combine_output` (bool, optional): combine stdout and stderr into `output` (default: the `combine_output` config option, normally `false`)
