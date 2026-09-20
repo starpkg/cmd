@@ -129,3 +129,13 @@ option table, defaults, and accessors.
 ## License
 
 MIT
+
+### Go compatibility
+
+The library supports Go 1.19 and keeps `go.starlark.net` pinned to
+`v0.0.0-20260324133313-ffb3f39dd27a`. The command splitter uses
+`bitbucket.org/creachadair/shell v0.0.7` (Go 1.16): v0.0.8 raised its declared
+minimum to Go 1.20 while changing only comments in the runtime source. The
+older pin preserves the same command-splitting implementation without imposing
+that additional dependency requirement. Use a supported patched Go toolchain
+for production applications.

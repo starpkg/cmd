@@ -3,7 +3,7 @@ module github.com/starpkg/cmd
 go 1.19
 
 require (
-	bitbucket.org/creachadair/shell v0.0.8
+	bitbucket.org/creachadair/shell v0.0.7
 	github.com/1set/starlet v0.2.3
 	github.com/starpkg/base v0.1.2
 	go.starlark.net v0.0.0-20260324133313-ffb3f39dd27a
