@@ -343,18 +343,24 @@ func (m *Module) checkEnvAllowed(env map[string]string) error {
 		if key == "" || strings.ContainsAny(key, "=\x00") {
 			return fmt.Errorf("cmd: invalid environment variable name %q", key)
 		}
-		allowed := m.allowAll
-		for _, grant := range m.envKeys {
-			if key == grant || (runtime.GOOS == "windows" && strings.ToUpper(key) == strings.ToUpper(grant)) {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
+		if !m.envKeyAllowed(key) {
 			return fmt.Errorf("cmd: environment variable %q is not permitted by the host policy", key)
 		}
 	}
 	return nil
+}
+
+// envKeyAllowed matches exact host grants using the child environment's case rules.
+func (m *Module) envKeyAllowed(key string) bool {
+	if m.allowAll {
+		return true
+	}
+	for _, grant := range m.envKeys {
+		if key == grant || (runtime.GOOS == "windows" && strings.ToUpper(key) == strings.ToUpper(grant)) {
+			return true
+		}
+	}
+	return false
 }
 
 // getStringWithDefault returns the first non-empty string from the given options.
