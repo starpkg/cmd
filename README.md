@@ -34,11 +34,39 @@ script or by environment variables:
    the caller is fully trusted (e.g. a CLI behind a `--dangerously-allow-all` style
    flag). The input hardening above (argv-only, no shell, Unicode rejection) still
    applies; only the allowlist is skipped. Prefer `NewModuleWithAllow` with a
-   specific allowlist whenever the command set is known.
+   specific allowlist whenever the command set is known. This trusted mode also
+   permits arbitrary environment overrides; dynamic-linker variables are still
+   stripped.
+6. **Host-controlled environment keys.** `NewModuleWithAllow` permits no
+   script/config environment overrides. Use `NewModuleWithPolicy` with
+   `Policy{Commands: ..., EnvKeys: ...}` to grant exact keys. The same check
+   applies to `env=`, `set_env()` and `CMD_ENV` before a process starts.
+   Names are case-sensitive on Unix and case-insensitive on Windows; prefixes
+   and wildcards are not expanded.
 
-The enable flag, allowlist, and allow-all decision are **not** configuration keys
-— they are set in Go via `NewModuleWithAllow` / `NewModuleWithAllowAll` and cannot
+The enable flag, command/environment grants, and allow-all decision are **not** configuration keys
+— they are set in Go via `NewModuleWithAllow`, `NewModuleWithPolicy` or
+`NewModuleWithAllowAll` and cannot
 be widened by a script or environment variable.
+
+### Environment grants and compatibility
+
+Scripts using `env=`, `set_env()` or `CMD_ENV` with `NewModuleWithAllow` must
+migrate to explicit environment grants. For example:
+
+```go
+module := cmd.NewModuleWithPolicy(cmd.Policy{
+    Commands: []string{"go env GOOS"},
+    EnvKeys:  []string{"GOOS"},
+})
+```
+
+Granting a key permits arbitrary values for every allowed command: review the
+selected programs before granting keys such as `PATH`, `BASH_ENV`,
+`GIT_CONFIG_*` or interpreter startup options. Grants do not expose additional
+host environment variables. These checks govern the module's config and call
+inputs; the host must also prevent untrusted scripts from mutating process-wide
+environment or executable files through other modules.
 
 ### Cross-platform note
 

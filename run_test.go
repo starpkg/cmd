@@ -12,10 +12,12 @@ package cmd_test
 //     documented ProcessResult field shape)
 //   - failed execution result shape (nonzero exit; allowed-but-missing binary)
 //   - NewModuleWithConfig stays disabled (host policy is construction-bound)
+//   - script environment policy: config and per-call values cannot widen host grants
 //   - cross-platform execution (real argv run + stdout capture proven per-OS;
 //     this section runs in CI on ubuntu/macos/windows)
 
 import (
+	"fmt"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -183,7 +185,7 @@ run("go version\nrm -rf /")
 // --- run options -------------------------------------------------------------
 
 func TestRunOptions(t *testing.T) {
-	module := cmd.NewModuleWithAllow("go", "cat")
+	module := cmd.NewModuleWithPolicy(cmd.Policy{Commands: []string{"go", "cat"}, EnvKeys: []string{"GOOS"}})
 
 	t.Run("env is passed to the child", func(t *testing.T) {
 		// `go env GOOS` reports the GOOS read from the process environment, so
@@ -440,4 +442,87 @@ print("pwd:", r.stdout.strip())
 	if !strings.Contains(out, "pwd: "+dir) {
 		t.Errorf("PWD should equal cwd %q, got:\n%s", dir, out)
 	}
+}
+
+// --- Script environment policy ----------------------------------------------
+
+func TestRestrictedEnvironmentDefaultDeny(t *testing.T) {
+	for _, key := range []string{
+		"GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "BASH_ENV", "ENV",
+		"PYTHONSTARTUP", "PERL5OPT", "NODE_OPTIONS", "RUBYOPT", "PATH", "Path",
+		"HOME", "SHELL", "ComSpec", "GOFLAGS", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES",
+		"LDR_PRELOAD", "APP_SETTING",
+	} {
+		for _, source := range []string{"argument", "setter", "environment"} {
+			t.Run(key+"/"+source, func(t *testing.T) {
+				extra := fmt.Sprintf("{%q: %q}", key, "fixture-value")
+				script := `load("cmd", "run", "set_env")` + "\n"
+				switch source {
+				case "argument":
+					script += "run(\"go version\", env=" + extra + ")"
+				case "setter":
+					script += "set_env(" + extra + ")\nrun(\"go version\")"
+				case "environment":
+					t.Setenv("CMD_ENV", extra)
+					script += "run(\"go version\")"
+				}
+				_, err := runScript(cmd.NewModuleWithAllow("go"), script)
+				if err == nil || !strings.Contains(err.Error(), "environment variable") {
+					t.Fatalf("ungranted key %q accepted via %s: %v", key, source, err)
+				}
+				if strings.Contains(err.Error(), "fixture-value") {
+					t.Errorf("policy error must not echo environment values: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestEnvironmentPolicyIntegration(t *testing.T) {
+	for _, source := range []string{"argument", "setter", "environment"} {
+		t.Run(source, func(t *testing.T) {
+			m := cmd.NewModuleWithPolicy(cmd.Policy{Commands: []string{"go env GOOS"}, EnvKeys: []string{"GOOS"}})
+			script := `load("cmd", "run", "set_env")` + "\n"
+			switch source {
+			case "argument":
+				script += `r = run("go env GOOS", env={"GOOS": "js"})`
+			case "setter":
+				script += "set_env({\"GOOS\": \"js\"})\nr = run(\"go env GOOS\")"
+			case "environment":
+				t.Setenv("CMD_ENV", `{"GOOS":"js"}`)
+				script += `r = run("go env GOOS")`
+			}
+			out, err := runScript(m, script+"\nprint(r.success)\nprint(r.stdout.strip())")
+			if err != nil || !strings.Contains(out, "True\njs") {
+				t.Fatalf("granted environment not delivered: out=%q err=%v", out, err)
+			}
+		})
+	}
+	t.Run("call override cannot hide a denied config key", func(t *testing.T) {
+		m := cmd.NewModuleWithPolicy(cmd.Policy{Commands: []string{"go"}, EnvKeys: []string{"GOOS"}})
+		_, err := runScript(m, `
+load("cmd", "run", "set_env")
+set_env({"GOOS": "linux", "BASH_ENV": "fixture"})
+run("go env GOOS", env={"GOOS": "js"})
+`)
+		if err == nil || !strings.Contains(err.Error(), "BASH_ENV") {
+			t.Fatalf("config environment escaped policy: %v", err)
+		}
+	})
+	t.Run("empty commands still deny execution", func(t *testing.T) {
+		_, err := runScript(cmd.NewModuleWithPolicy(cmd.Policy{EnvKeys: []string{"GOOS"}}), `load("cmd", "run")`+"\n"+`run("go version")`)
+		if err == nil || !strings.Contains(err.Error(), "command") {
+			t.Fatalf("environment grant enabled an ungranted command: %v", err)
+		}
+	})
+	t.Run("allow-all retains trusted environment", func(t *testing.T) {
+		out, err := runScript(cmd.NewModuleWithAllowAll(), `
+load("cmd", "run")
+r = run("go env GOOS", env={"GOOS": "js"})
+print(r.stdout.strip())
+`)
+		if err != nil || strings.TrimSpace(out) != "js" {
+			t.Fatalf("allow-all behavior changed: out=%q err=%v", out, err)
+		}
+	})
 }
