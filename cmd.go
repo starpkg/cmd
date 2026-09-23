@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -68,14 +69,39 @@ type ProcessResult struct {
 }
 
 // Module wraps the ConfigurableModule with specific functionality for command execution.
-// enabled, allow and allowAll are host policy (set in Go) and are never
+// enabled, allow, envKeys and allowAll are host policy (set in Go) and are never
 // overridable by a script or by environment variables.
 type Module struct {
 	cfgMod   *base.ConfigurableModule
 	ext      *base.ConfigurableModuleExt
 	enabled  bool
 	allow    []string
+	envKeys  []string
 	allowAll bool
+}
+
+// Policy grants command prefixes and script-controlled environment keys.
+// Commands uses the same word-boundary matching as NewModuleWithAllow. EnvKeys
+// grants exact names (case-insensitive on Windows), never prefixes or wildcards.
+// Each granted key permits arbitrary values, so the host must review its meaning
+// for every allowed command. Neither field is script-settable. An empty policy
+// permits no commands or environment overrides.
+type Policy struct {
+	Commands []string
+	EnvKeys  []string
+}
+
+// NewModuleWithPolicy returns an enabled module with a copy of the host policy.
+// Every key in env=, set_env() and CMD_ENV must be explicitly granted. This does
+// not grant access to additional host environment values; the existing minimal
+// host-environment inheritance remains in force. Dynamic-linker variables are
+// always stripped before execution, even if explicitly granted.
+func NewModuleWithPolicy(policy Policy) *Module {
+	m := NewModule()
+	m.enabled = true
+	m.allow = append([]string(nil), policy.Commands...)
+	m.envKeys = append([]string(nil), policy.EnvKeys...)
+	return m
 }
 
 // NewModule creates a new instance of Module with default configurations.
@@ -109,12 +135,10 @@ func NewModuleWithConfig(cwd string, env map[string]string, timeout float64, com
 // Each entry is a prefix matched against the canonical command (argv joined by a
 // single space) at a word boundary: "git" permits "git status" but not
 // "gitleaks"; "go test" permits "go test ./..." but not "go build". An empty
-// allowlist enables the module but permits nothing (deny-all).
+// allowlist enables the module but permits nothing (deny-all). No script/config
+// environment overrides are permitted; use NewModuleWithPolicy to grant keys.
 func NewModuleWithAllow(allow ...string) *Module {
-	m := NewModule()
-	m.enabled = true
-	m.allow = append([]string(nil), allow...)
-	return m
+	return NewModuleWithPolicy(Policy{Commands: allow})
 }
 
 // NewModuleWithAllowAll returns a module that is ENABLED and permits EVERY
@@ -126,7 +150,9 @@ func NewModuleWithAllow(allow ...string) *Module {
 // other path (sanitizeCommand rejects control / zero-width characters, and
 // execution stays argv-only — never a shell). Like enable and allow, the
 // allow-all decision is Go-host state bound at construction: nothing a script
-// does, and no environment variable, can set or widen it.
+// does, and no environment variable, can set or widen it. This trusted mode also
+// permits arbitrary environment overrides; dynamic-linker variables are still
+// stripped before execution.
 func NewModuleWithAllowAll() *Module {
 	m := NewModule()
 	m.enabled = true
@@ -290,6 +316,9 @@ func (m *Module) run(thread *starlark.Thread, b *starlark.Builtin, args starlark
 	captureOutputBool := getBoolWithDefault(captureOutput, m.ext.GetBool(configKeyCaptureOutput, true))
 
 	envMap := buildEnvMap(m.cfgMod, env)
+	if err := m.checkEnvAllowed(envMap); err != nil {
+		return none, err
+	}
 
 	result, err := executeArgv(thread, parts, cwdStr, timeoutFloat, stdinStr, combineOutputBool, realtimeOutputBool, captureOutputBool, envMap)
 	if err != nil {
@@ -300,6 +329,39 @@ func (m *Module) run(thread *starlark.Thread, b *starlark.Builtin, args starlark
 }
 
 // Helper functions for argument processing
+
+// checkEnvAllowed checks the merged config/call environment before any process
+// is started. Sorting keeps the first rejected key deterministic; errors never
+// include values, which may contain credentials.
+func (m *Module) checkEnvAllowed(env map[string]string) error {
+	keys := make([]string, 0, len(env))
+	for key := range env {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if key == "" || strings.ContainsAny(key, "=\x00") {
+			return fmt.Errorf("cmd: invalid environment variable name %q", key)
+		}
+		if !m.envKeyAllowed(key) {
+			return fmt.Errorf("cmd: environment variable %q is not permitted by the host policy", key)
+		}
+	}
+	return nil
+}
+
+// envKeyAllowed matches exact host grants using the child environment's case rules.
+func (m *Module) envKeyAllowed(key string) bool {
+	if m.allowAll {
+		return true
+	}
+	for _, grant := range m.envKeys {
+		if key == grant || (runtime.GOOS == "windows" && strings.ToUpper(key) == strings.ToUpper(grant)) {
+			return true
+		}
+	}
+	return false
+}
 
 // getStringWithDefault returns the first non-empty string from the given options.
 // A null value yields the empty string (let the OS/process default apply).
@@ -359,10 +421,9 @@ var safeHostEnvKeys = []string{
 // allowlisted binary and bypass the command allowlist. Covers the glibc/musl
 // (LD_*), macOS (DYLD_*), and AIX (LDR_*) loader families.
 //
-// Note: this closes the universal loader-injection class only. App-specific
-// env vars that also run code (e.g. GIT_CONFIG_*, BASH_ENV, interpreter startup
-// hooks) are an open-ended surface a blocklist cannot fully cover; constraining
-// script-supplied env to an allowlist is tracked separately.
+// Restricted modules also require an explicit host grant for each config/call
+// key before reaching this final filter. The trusted allow-all mode still uses
+// this filter without restricting application-specific environment keys.
 func stripDangerousEnv(env map[string]string) map[string]string {
 	out := make(map[string]string, len(env))
 	for k, v := range env {

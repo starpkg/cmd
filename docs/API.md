@@ -42,7 +42,7 @@ globbing) are **not** interpreted. Pass environment variables explicitly via
 
 - `command` (string, required): the command line, split into argv (no shell)
 - `cwd` (string, optional): working directory (default: the `cwd` config option, else the current directory)
-- `env` (dict, optional): extra environment variables, merged on top of the `env` config option. The child does **not** inherit the host's full environment: only an allowlist of safe, non-secret operational variables (e.g. `PATH`, `HOME`, `TZ`, proxy/CA settings) is passed through, so host secrets are withheld. Dynamic-linker preload variables (`LD_*`/`DYLD_*`/`LDR_*`) are stripped even when supplied here.
+- `env` (dict, optional): extra environment variables, merged on top of the `env` config option. In restricted modules every merged key must be explicitly granted through `Policy.EnvKeys`; `NewModuleWithAllow` grants none. Unknown keys raise an error before execution. The child does **not** inherit the host's full environment: only an allowlist of safe, non-secret operational variables (e.g. `PATH`, `HOME`, `TZ`, proxy/CA settings) is passed through, so host secrets are withheld. Dynamic-linker preload variables (`LD_*`/`DYLD_*`/`LDR_*`) are stripped even when supplied here.
 - `stdin` (string, optional): input written to the command's standard input
 - `timeout` (float, optional): max execution time in seconds (default: the `timeout` config option; `0` = no limit)
 - `combine_output` (bool, optional): combine stdout and stderr into `output` (default: the `combine_output` config option, normally `false`)
@@ -59,6 +59,7 @@ globbing) are **not** interpreted. Pass environment variables explicitly via
   format/zero-width character
 - `command` has invalid syntax or unclosed quotes (cannot be split into argv)
 - the command's canonical form is not permitted by the allowlist
+- a merged environment key is not granted by the host policy, or its name is empty or contains `=`/NUL
 
 A command that runs but exits non-zero does **not** raise; it returns a
 `ProcessResult` with `success = False` and the non-zero `exit_code`. A command
@@ -172,7 +173,9 @@ widened by a script or an environment variable.
 
 - `NewModule()` — a **disabled** module with default config; `run()` always errors.
 - `NewModuleWithConfig(cwd, env, timeout, combineOutput, realtimeOutput, captureOutput)` — a **disabled** module with preset config defaults.
-- `NewModuleWithAllow(allow ...string)` — an **enabled** module with the given allowlist.
+- `NewModuleWithAllow(allow ...string)` — an **enabled** module with the given command allowlist and no script/config environment grants.
+- `NewModuleWithPolicy(policy Policy)` — an **enabled** module with copied command and environment grants. `Policy.Commands` uses the same command matching; `Policy.EnvKeys` permits exact environment names (case-insensitive only on Windows). Empty command grants still deny every command; an empty environment grant permits no overrides. No wildcard or prefix expansion is performed.
+- `NewModuleWithAllowAll()` — a trusted module permitting every command and arbitrary environment overrides. Input hardening and dynamic-linker stripping remain in force.
 
 Each allowlist entry is a prefix matched against the canonical command (argv
 joined by single spaces) at a word boundary: `"git"` permits `git status` but
@@ -180,8 +183,17 @@ not `gitleaks`; `"go test"` permits `go test ./...` but not `go build`. An empty
 allowlist enables the module but permits nothing (deny-all).
 
 There is deliberately no allow-*setter*: enabling and the allowlist are bound
-together at construction. To enable execution you must construct the module via
-`NewModuleWithAllow(...)`; `NewModuleWithConfig(...)` returns a disabled module.
+together at construction. The policy also checks values supplied through
+`set_env()` and `CMD_ENV`; these sources cannot create new key grants.
+`NewModuleWithConfig(...)` returns a disabled module.
+
+**Migration:** a script that supplies environment values to a restricted module
+now needs explicit host grants. For example, construct
+`NewModuleWithPolicy(Policy{Commands: []string{"go env GOOS"}, EnvKeys: []string{"GOOS"}})`.
+Each grant permits arbitrary values for that key, so review it against every
+allowed executable. Dynamic-linker variables remain stripped even if granted.
+This does not authorize additional host-environment inheritance or protect
+against another module mutating the process-wide environment/executable files.
 
 ```go
 // Go host: enable cmd with an allowlist
@@ -211,7 +223,7 @@ accessor — never a getter — but this module has none.)
 | Option | Getter | Setter | Type | Env var | Default | Description |
 |--------|--------|--------|------|---------|---------|-------------|
 | `cwd` | `get_cwd` | `set_cwd` | string | `CMD_CWD` | current directory | Default working directory for commands |
-| `env` | `get_env` | `set_env` | dict | `CMD_ENV` | `{}` | Environment variables added to every command |
+| `env` | `get_env` | `set_env` | dict | `CMD_ENV` | `{}` | Environment defaults added to every command; merged keys remain subject to host grants |
 | `timeout` | `get_timeout` | `set_timeout` | float | `CMD_TIMEOUT` | `0` | Default timeout in seconds (`0` = no limit) |
 | `combine_output` | `get_combine_output` | `set_combine_output` | bool | `CMD_COMBINE_OUTPUT` | `false` | Combine stdout and stderr into `output` |
 | `realtime_output` | `get_realtime_output` | `set_realtime_output` | bool | `CMD_REALTIME_OUTPUT` | `false` | Echo output to the console in real time |

@@ -8,9 +8,13 @@ package cmd
 //   - constructor policy state (enabled/allow are Go-host only)
 //   - argument defaulting helpers (cwd / timeout / bool)
 //   - env map building (config default + per-call override)
+//   - host environment grants: exact keys, immutable policy, full module surface
 //   - result struct shaping (capture/combine output matrix)
 
 import (
+	"reflect"
+	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -451,6 +455,88 @@ func TestSafeHostEnvIncludesProxyAndCA(t *testing.T) {
 	for _, want := range []string{"HTTPS_PROXY", "https_proxy", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR"} {
 		if !have[want] {
 			t.Errorf("safeHostEnvKeys should include %q so network tools work behind the allowlist", want)
+		}
+	}
+}
+
+// --- Host environment grants -------------------------------------------------
+
+func TestEnvironmentPolicy(t *testing.T) {
+	commands, keys := []string{"go version"}, []string{"APP_SETTING", "MixedCase"}
+	m := NewModuleWithPolicy(Policy{Commands: commands, EnvKeys: keys})
+	commands[0], keys[0] = "other", "BASH_ENV"
+	if !commandAllowed("go version", m.allow) || commandAllowed("other", m.allow) {
+		t.Fatal("command policy was not copied")
+	}
+	for _, tc := range []struct {
+		key     string
+		allowed bool
+	}{
+		{"APP_SETTING", true}, {"APP_SETTING_EXTRA", false}, {"APP_", false},
+		{"MixedCase", true}, {"mixedcase", runtime.GOOS == "windows"},
+		{"BASH_ENV", false}, {"PATH", false}, {"Path", false}, {"", false},
+		{"APP_SETTING=INJECTED", false}, {"APP_SETTING\x00", false},
+	} {
+		err := m.checkEnvAllowed(map[string]string{tc.key: "fixture-value"})
+		if (err == nil) != tc.allowed {
+			t.Errorf("key %q: err=%v, allowed=%v", tc.key, err, tc.allowed)
+		}
+	}
+	if err := m.checkEnvAllowed(nil); err != nil {
+		t.Errorf("empty overrides: %v", err)
+	}
+	wildcard := NewModuleWithPolicy(Policy{EnvKeys: []string{"APP_*"}})
+	if err := wildcard.checkEnvAllowed(map[string]string{"APP_SETTING": "x"}); err == nil {
+		t.Error("environment grant must not expand a wildcard")
+	}
+	all := NewModuleWithAllowAll()
+	if err := all.checkEnvAllowed(map[string]string{"APP_SETTING": "x"}); err != nil {
+		t.Errorf("trusted allow-all rejected environment: %v", err)
+	}
+	for _, key := range []string{"", "bad=name", "bad\x00name"} {
+		if err := all.checkEnvAllowed(map[string]string{key: "x"}); err == nil {
+			t.Errorf("allow-all accepted invalid name %q", key)
+		}
+	}
+	for i := 0; i < 20; i++ {
+		err := m.checkEnvAllowed(map[string]string{"Z_BAD": "z", "A_BAD": "a"})
+		if err == nil || !strings.Contains(err.Error(), `"A_BAD"`) {
+			t.Errorf("first denial must be deterministic: %v", err)
+		}
+	}
+}
+
+func TestHostPolicyModuleSurface(t *testing.T) {
+	want := []string{
+		"get_capture_output", "get_combine_output", "get_cwd", "get_env", "get_realtime_output", "get_timeout",
+		"run", "set_capture_output", "set_combine_output", "set_cwd", "set_env", "set_realtime_output", "set_timeout", "which",
+	}
+	for _, m := range []*Module{NewModule(), NewModuleWithAllow("go"), NewModuleWithPolicy(Policy{Commands: []string{"go"}, EnvKeys: []string{"GOOS"}}), NewModuleWithAllowAll()} {
+		values, err := m.LoadModule()()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(values) != 1 || values[ModuleName] == nil {
+			t.Fatalf("unexpected module exports: %v", values.Keys())
+		}
+		got := values[ModuleName].(starlark.HasAttrs).AttrNames()
+		sort.Strings(got)
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("script-facing surface changed: %v, want %v", got, want)
+		}
+	}
+}
+
+func BenchmarkRunWithoutEnvironmentOverrides(b *testing.B) {
+	m := NewModuleWithAllow("cmd-benchmark-missing-executable")
+	fn := starlark.NewBuiltin("cmd.run", m.run)
+	thread := &starlark.Thread{}
+	args := starlark.Tuple{starlark.String("cmd-benchmark-missing-executable")}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := starlark.Call(thread, fn, args, nil); err != nil {
+			b.Fatal(err)
 		}
 	}
 }
