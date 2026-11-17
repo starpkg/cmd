@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`starpkg/cmd` is an **L4 domain module** of the Star\* ecosystem: it exposes a guarded way for Starlark scripts to **run external programs** — execute an argv, capture stdout/stderr/exit code, or locate a binary on `PATH`. It fits the starpkg positioning — *support for necessary local operations + simple abstractions over common online services* — squarely on the **local** side: it is a **local-capability** module (process execution on the host), with no online-service abstraction.
+`starpkg/cmd` is an **L3 domain module** of the Star\* ecosystem: it exposes a guarded way for Starlark scripts to **run external programs** — execute an argv, capture stdout/stderr/exit code, or locate a binary on `PATH`. It fits the starpkg positioning — *support for necessary local operations + simple abstractions over common online services* — squarely on the **local** side: it is a **local-capability** module (process execution on the host), with no online-service abstraction.
 
 Because spawning processes is the single most dangerous capability a script can hold, `cmd` is **disabled by default** and **deny-by-default once enabled** (PKG-09). The host opts in, in Go, with an allowlist; nothing a script does (or any environment variable) can widen that policy.
 
-Layer position: depends downward on `starpkg/base` (the module/config system), `1set/starlet` (the Machine + `dataconv`/`dataconv/types` arg coercion), and transitively `1set/starlight` + `go.starlark.net`. The only third-party SDK is `bitbucket.org/creachadair/shell` — used **solely to split** a command string into argv (POSIX-style word splitting); it never executes anything. Nothing in the ecosystem depends on this module.
+Layer position: depends downward on `starpkg/base` (the module/config system), `1set/starlet` (the Machine + `dataconv`/`dataconv/types` arg coercion), and transitively `1set/starlight` + `go.starlark.net`. The only third-party SDK is `bitbucket.org/creachadair/shell` — used **solely to split** a command string into argv (POSIX-style word splitting); it never executes anything. StarCLI registers this module; it does not depend upward on StarCLI.
 
 ## Dev commands
 
@@ -74,7 +74,7 @@ Three layers must stay in sync (the doc standard, `plan/starpkg文档标准（DO
 ## Release discipline
 
 - **Floor = go 1.19** (this repo's `go.mod`); a repo's floor only rises in its own pin PR.
-- **CI matrix** = `[1.19.x, 1.25.x]` via the centralized reusable workflow in `1set/meta` (`go-ci.yml`, pinned to a full commit SHA). The doc-coverage and (informational) govulncheck steps run from that workflow.
+- **CI matrix** = `[1.19.x, 1.27.x]` via the centralized reusable workflow in `1set/meta` (`go-ci.yml`, pinned to a full commit SHA). The doc-coverage and (informational) govulncheck steps run from that workflow.
 - **Pin upgrade is the last PR of the series.** Upgrading the `go.starlark.net` pin + `1set` deps + go floor happens *after* all fixes, as one isolated PR; **don't tag a release until that pin PR merges.**
 - **Bumping the version, the go floor, or tagging are user-confirmed actions** — never tag autonomously; draft title + notes and get explicit approval first; default to patch bumps; published tags are immutable.
 - **Open-source boundary.** This repo is public — keep internal/business names out of code, comments, commits, and PRs.
